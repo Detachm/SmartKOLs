@@ -510,6 +510,6 @@ AI 能力依赖：Claude API（文本分类）。
 | 信息源 | 为 AI 生成内容提供素材的外部内容来源 |
 
 ### 10.2 相关文档
-- **技术实现文档**：[TECHNICAL.md](TECHNICAL.md) —— 当前 Demo 的技术栈、架构、组件结构、数据模型
+- **Demo 技术文档**：[DEMO_TECHNICAL.md](DEMO_TECHNICAL.md) —— 当前 Demo 的技术栈、架构、组件结构、数据模型
 - **Demo 体验地址**：https://smartkols.vercel.app/
 - **代码仓库**：https://github.com/yb2999/SmartKOLs
