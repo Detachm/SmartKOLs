@@ -30,7 +30,6 @@ export default function DistillationPanel({ currentPersona, onExtracted }: Props
     if (!tweets.trim()) return;
     setLoading(true);
     setDone(false);
-    await new Promise((r) => setTimeout(r, 1800));
     const extracted = { ...currentPersona, ...MOCK_EXTRACTED };
     onExtracted(extracted);
     setLoading(false);

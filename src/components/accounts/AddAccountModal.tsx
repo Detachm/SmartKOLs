@@ -31,7 +31,6 @@ export default function AddAccountModal({ open, onClose }: Props) {
 
   const handleConnect = async () => {
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1500));
     const cleanHandle = handle.startsWith("@") ? handle : `@${handle}`;
     addAccount({
       id: `acc_${Date.now()}`,
@@ -50,7 +49,6 @@ export default function AddAccountModal({ open, onClose }: Props) {
 
   const handleOAuth = async () => {
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 2000));
     addAccount({
       id: `acc_${Date.now()}`,
       handle: "@oauth_user",

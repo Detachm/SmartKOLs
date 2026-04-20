@@ -6,6 +6,13 @@ import { useMockStore, EngagementConfig } from "@/lib/mock-store";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import TraitTagInput from "@/components/persona/TraitTagInput";
 import { UserPlus, Repeat2, MessageCircle, Reply, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -31,12 +38,26 @@ const REPLY_STYLES = [
   { value: "brief", label: "简短确认" },
 ];
 
+type EngagementLogType = "follow" | "retweet" | "comment" | "reply";
+
+const DETAIL_CARD_META: Record<EngagementLogType, {
+  label: string;
+  icon: typeof UserPlus;
+  empty: string;
+}> = {
+  follow: { label: "今日关注", icon: UserPlus, empty: "今天还没有自动关注记录。" },
+  retweet: { label: "今日转发", icon: Repeat2, empty: "今天还没有自动转发记录。" },
+  comment: { label: "今日评论", icon: MessageCircle, empty: "今天还没有自动评论记录。" },
+  reply: { label: "今日回复", icon: Reply, empty: "今天还没有自动回复记录。" },
+};
+
 export default function EngagementPage() {
   const params = useParams();
   const id = params.id as string;
   const { getEngagementConfig, updateEngagementConfig, engagementLogs } = useMockStore();
   const [config, setConfig] = useState<EngagementConfig>(getEngagementConfig(id));
   const [saved, setSaved] = useState(false);
+  const [detailType, setDetailType] = useState<EngagementLogType | null>(null);
 
   const accountLogs = useMemo(
     () => engagementLogs.filter((l) => l.accountId === id).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
@@ -62,6 +83,23 @@ export default function EngagementPage() {
     comment: accountLogs.filter((l) => l.type === "comment" && new Date(l.at).toDateString() === todayStr).length,
     reply: accountLogs.filter((l) => l.type === "reply" && new Date(l.at).toDateString() === todayStr).length,
   };
+  const todayLogs = useMemo(
+    () => ({
+      follow: accountLogs.filter((l) => l.type === "follow" && new Date(l.at).toDateString() === todayStr),
+      retweet: accountLogs.filter((l) => l.type === "retweet" && new Date(l.at).toDateString() === todayStr),
+      comment: accountLogs.filter((l) => l.type === "comment" && new Date(l.at).toDateString() === todayStr),
+      reply: accountLogs.filter((l) => l.type === "reply" && new Date(l.at).toDateString() === todayStr),
+    }),
+    [accountLogs, todayStr]
+  );
+  const detailMeta = detailType ? DETAIL_CARD_META[detailType] : null;
+  const detailLogs = detailType ? todayLogs[detailType] : [];
+  const summaryCards: Array<{ type: EngagementLogType; count: number }> = [
+    { type: "follow", count: todayCount.follow },
+    { type: "retweet", count: todayCount.retweet },
+    { type: "comment", count: todayCount.comment },
+    { type: "reply", count: todayCount.reply },
+  ];
 
   return (
     <div>
@@ -73,22 +111,25 @@ export default function EngagementPage() {
 
       {/* Today's Summary */}
       <div className="grid grid-cols-4 gap-3 mb-8">
-        <div className="bg-white border border-[#E8E8E8] rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-1"><UserPlus className="w-4 h-4 text-[#999999]" /><span className="text-xs text-[#999999]">今日关注</span></div>
-          <p className="text-[#111111] text-xl font-bold">{todayCount.follow}</p>
-        </div>
-        <div className="bg-white border border-[#E8E8E8] rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-1"><Repeat2 className="w-4 h-4 text-[#999999]" /><span className="text-xs text-[#999999]">今日转发</span></div>
-          <p className="text-[#111111] text-xl font-bold">{todayCount.retweet}</p>
-        </div>
-        <div className="bg-white border border-[#E8E8E8] rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-1"><MessageCircle className="w-4 h-4 text-[#999999]" /><span className="text-xs text-[#999999]">今日评论</span></div>
-          <p className="text-[#111111] text-xl font-bold">{todayCount.comment}</p>
-        </div>
-        <div className="bg-white border border-[#E8E8E8] rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-1"><Reply className="w-4 h-4 text-[#999999]" /><span className="text-xs text-[#999999]">今日回复</span></div>
-          <p className="text-[#111111] text-xl font-bold">{todayCount.reply}</p>
-        </div>
+        {summaryCards.map(({ type, count }) => {
+          const meta = DETAIL_CARD_META[type];
+          const Icon = meta.icon;
+          return (
+            <button
+              key={type}
+              type="button"
+              onClick={() => setDetailType(type)}
+              className="rounded-xl border border-[#E8E8E8] bg-white p-4 text-left transition-colors hover:border-[#CCCCCC] hover:bg-[#FAFAFA]"
+            >
+              <div className="mb-1 flex items-center gap-2">
+                <Icon className="h-4 w-4 text-[#999999]" />
+                <span className="text-xs text-[#999999]">{meta.label}</span>
+              </div>
+              <p className="text-xl font-bold text-[#111111]">{count}</p>
+              <p className="mt-2 text-[11px] text-[#999999]">点击查看详情</p>
+            </button>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -328,6 +369,58 @@ export default function EngagementPage() {
           </div>
         </div>
       </div>
+
+      <Dialog open={detailType !== null} onOpenChange={(open) => {
+        if (!open) setDetailType(null);
+      }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{detailMeta?.label ?? "互动详情"}</DialogTitle>
+            <DialogDescription>展示该账号今天的自动互动明细。</DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-2">
+            {detailMeta && detailLogs.length === 0 ? (
+              <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] px-4 py-8 text-center text-sm text-[#777777]">
+                {detailMeta.empty}
+              </div>
+            ) : null}
+
+            {detailLogs.map((log) => {
+              const typeInfo = {
+                follow: { icon: <UserPlus className="w-4 h-4" />, label: "已关注", color: "text-blue-500 bg-blue-50" },
+                retweet: { icon: <Repeat2 className="w-4 h-4" />, label: "已转发", color: "text-[#00BA7C] bg-green-50" },
+                comment: { icon: <MessageCircle className="w-4 h-4" />, label: "已评论", color: "text-orange-500 bg-orange-50" },
+                reply: { icon: <Reply className="w-4 h-4" />, label: "已回复", color: "text-purple-500 bg-purple-50" },
+              }[log.type];
+
+              return (
+                <div key={log.id} className="rounded-xl border border-[#E8E8E8] bg-white p-4">
+                  <div className="flex items-start gap-3">
+                    <span className={cn("flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full", typeInfo.color)}>
+                      {typeInfo.icon}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm text-[#111111]">
+                          <span className="font-medium">{typeInfo.label}</span>
+                          {" "}
+                          <span className="font-medium">{log.targetHandle}</span>
+                          {log.targetName ? <span className="text-[#999999]"> · {log.targetName}</span> : null}
+                        </p>
+                        <span className="text-xs text-[#999999]">{timeAgo(log.at)}</span>
+                      </div>
+                      {log.tweetExcerpt ? <p className="mt-2 text-sm italic text-[#666666]">&ldquo;{log.tweetExcerpt}&rdquo;</p> : null}
+                      {log.commentText ? <p className="mt-2 text-sm text-[#111111]">评论内容：{log.commentText}</p> : null}
+                      {log.replyText ? <p className="mt-2 text-sm text-[#111111]">回复内容：{log.replyText}</p> : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

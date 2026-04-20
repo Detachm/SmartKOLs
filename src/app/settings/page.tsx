@@ -6,6 +6,7 @@ import { useMockStore } from "@/lib/mock-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { logoutLiveSession } from "@/lib/session-client";
 import { CheckCircle, LogOut, UserPlus, RotateCcw, Users } from "lucide-react";
 
 export default function SettingsPage() {
@@ -23,10 +24,9 @@ export default function SettingsPage() {
   };
 
   const handleLogout = () => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("smartkols_logged_in");
-    }
-    router.push("/login");
+    void logoutLiveSession().finally(() => {
+      router.push("/login");
+    });
   };
 
   const handleReset = () => {

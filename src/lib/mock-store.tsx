@@ -1,18 +1,35 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import accountsData from "@/data/accounts.json";
-import personasData from "@/data/personas.json";
-import autopostData from "@/data/autopost.json";
-import sourcesData from "@/data/sources.json";
-import tweetPreviewsData from "@/data/tweet-previews.json";
-import groupsData from "@/data/groups.json";
-import templatesData from "@/data/persona-templates.json";
-import monitoringData from "@/data/monitoring.json";
-import draftsData from "@/data/drafts.json";
-import engagementConfigsData from "@/data/engagement-configs.json";
-import engagementLogsData from "@/data/engagement-logs.json";
-import notificationsData from "@/data/notifications.json";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  approveDraft as approveBackendDraft,
+  assignAccountsToGroup,
+  createAccountGroup,
+  createSource,
+  deleteAccount as deleteBackendAccount,
+  editDraft as editBackendDraft,
+  generateDraft,
+  getAutopostPolicy,
+  getMonitoringOverview,
+  getWorkspaceSettingsOverview,
+  importAccounts,
+  listAccountGroups,
+  listAccounts,
+  listDrafts,
+  listNotifications,
+  listSources,
+  listTrends,
+  pauseSource,
+  rejectDraft as rejectBackendDraft,
+  removeSource,
+  requestDraftRegeneration,
+  resumeSource,
+  upsertAutopostPolicy,
+  type BackendSource,
+} from "@/lib/live-api";
+import { getLiveSession, logoutLiveSession, type LiveSessionResponse } from "@/lib/session-client";
+import { getBackendData, postBackendData, putBackendData, type BackendAccount } from "@/lib/backend-client";
+import { waitForAgentTask } from "@/lib/agent-task-client";
 
 export interface Account {
   id: string;
@@ -191,26 +208,41 @@ export const DEFAULT_ENGAGEMENT_CONFIG: EngagementConfig = {
   autoReply: { enabled: false, maxPerDay: 30, triggerTypes: ["mention", "reply"], onlyFollowers: false, keywords: [], style: "grateful" },
 };
 
-const TRENDING_TOPICS: TrendingTopic[] = [
-  { topic: "Bitcoin ETF 资金流入", heat: 98, category: "加密" },
-  { topic: "Claude Sonnet 4.6 发布", heat: 94, category: "AI" },
-  { topic: "Layer 2 扩容进展", heat: 87, category: "加密" },
-  { topic: "美联储 5 月降息预期", heat: 85, category: "财经" },
-  { topic: "Llama 4 开源动态", heat: 82, category: "AI" },
-  { topic: "Solana TPS 新纪录", heat: 78, category: "加密" },
-  { topic: "AI 代理 Agent 范式", heat: 75, category: "AI" },
-  { topic: "纳指突破历史高点", heat: 72, category: "财经" },
-  { topic: "RAG vs 微调讨论", heat: 68, category: "AI" },
-  { topic: "DeFi 再质押赛道", heat: 65, category: "加密" },
-];
+const DAY_TO_CODE: Record<string, string> = {
+  "周一": "mon",
+  "周二": "tue",
+  "周三": "wed",
+  "周四": "thu",
+  "周五": "fri",
+  "周六": "sat",
+  "周日": "sun",
+  Mon: "mon",
+  Tue: "tue",
+  Wed: "wed",
+  Thu: "thu",
+  Fri: "fri",
+  Sat: "sat",
+  Sun: "sun",
+};
 
-const TEAM_MEMBERS: TeamMember[] = [
-  { id: "mem_001", name: "Raye Chen", email: "raye@smartkols.io", role: "Owner", avatarSeed: "naval", lastActive: "2 分钟前" },
-  { id: "mem_002", name: "Alex Wang", email: "alex@smartkols.io", role: "Admin", avatarSeed: "sama", lastActive: "1 小时前" },
-  { id: "mem_003", name: "Jenny Liu", email: "jenny@smartkols.io", role: "Editor", avatarSeed: "karpathy", lastActive: "3 小时前" },
-  { id: "mem_004", name: "Mike Zhang", email: "mike@smartkols.io", role: "Editor", avatarSeed: "pmarca", lastActive: "昨天" },
-  { id: "mem_005", name: "Sarah Kim", email: "sarah@smartkols.io", role: "Viewer", avatarSeed: "benedictevans", lastActive: "2 天前" },
-];
+const CODE_TO_DAY: Record<string, string> = {
+  mon: "周一",
+  tue: "周二",
+  wed: "周三",
+  thu: "周四",
+  fri: "周五",
+  sat: "周六",
+  sun: "周日",
+};
+
+const STORAGE_KEY = "smartkols_live_store_v1";
+
+interface StoreSidecar {
+  autopostExtras: Record<string, Partial<AutopostConfig>>;
+  engagementConfigs: Record<string, EngagementConfig>;
+  readMessageIds: string[];
+  readNotificationIds: string[];
+}
 
 interface MockStore {
   accounts: Account[];
@@ -248,7 +280,7 @@ interface MockStore {
   rejectDraft: (id: string) => void;
   regenerateDraft: (id: string) => void;
   editDraft: (id: string, content: string) => void;
-  addDraftsFromTopic: (topic: string) => void;
+  addDraftsFromTopic: (topic: string) => Promise<number>;
   getEngagementConfig: (accountId: string) => EngagementConfig;
   updateEngagementConfig: (accountId: string, config: EngagementConfig) => void;
   markNotificationRead: (id: string) => void;
@@ -260,216 +292,676 @@ interface MockStore {
 
 const MockStoreContext = createContext<MockStore | null>(null);
 
-const STORAGE_KEY = "smartkols_state_v1";
-
-function loadFromStorage<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
+function loadSidecar(): StoreSidecar {
+  if (typeof window === "undefined") {
+    return { autopostExtras: {}, engagementConfigs: {}, readMessageIds: [], readNotificationIds: [] };
+  }
   try {
-    const saved = localStorage.getItem(`${STORAGE_KEY}_${key}`);
-    return saved ? (JSON.parse(saved) as T) : fallback;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return { autopostExtras: {}, engagementConfigs: {}, readMessageIds: [], readNotificationIds: [] };
+    }
+    const parsed = JSON.parse(raw) as StoreSidecar;
+    return {
+      autopostExtras: parsed.autopostExtras ?? {},
+      engagementConfigs: parsed.engagementConfigs ?? {},
+      readMessageIds: parsed.readMessageIds ?? [],
+      readNotificationIds: parsed.readNotificationIds ?? [],
+    };
   } catch {
-    return fallback;
+    return { autopostExtras: {}, engagementConfigs: {}, readMessageIds: [], readNotificationIds: [] };
   }
 }
 
-function saveToStorage<T>(key: string, value: T) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(`${STORAGE_KEY}_${key}`, JSON.stringify(value));
-  } catch {}
+function persistSidecar(value: StoreSidecar) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+}
+
+function avatarSeedFromAccount(account: { handle: string; avatar_url?: string | null }) {
+  return account.handle.replace(/^@/, "") || account.avatar_url || "smartkols";
+}
+
+function mapAccount(account: BackendAccount): Account {
+  return {
+    id: account.id,
+    handle: account.handle,
+    displayName: account.display_name,
+    avatarSeed: avatarSeedFromAccount(account),
+    followersCount: account.follower_count,
+    followingCount: account.following_count,
+    tweetsCount: account.post_count,
+    active: account.status === "active",
+    createdAt: account.created_at,
+    groupId: account.group_id,
+  };
+}
+
+function mapPersona(raw?: {
+  gender: string;
+  nationality: string;
+  age: number;
+  interests: string[];
+  personality_traits: string[];
+  writing_style: string;
+  bio: string;
+  distillation_sample_tweets: string;
+} | null): Persona {
+  return {
+    gender: raw?.gender ?? "male",
+    nationality: raw?.nationality ?? "",
+    age: raw?.age ?? 25,
+    interests: raw?.interests ?? [],
+    personalityTraits: raw?.personality_traits ?? [],
+    writingStyle: raw?.writing_style ?? "",
+    bio: raw?.bio ?? "",
+    distillationSampleTweets: raw?.distillation_sample_tweets ?? "",
+  };
+}
+
+function mapSource(source: BackendSource): Source {
+  return {
+    id: source.id,
+    name: source.name,
+    url: source.url,
+    type: source.type,
+    active: source.status === "active",
+    lastFetched: source.last_fetched_at ?? source.created_at,
+  };
+}
+
+function mapDraft(raw: {
+  draft: {
+    id: string;
+    account_id: string;
+    status: string;
+    topic: string;
+    updated_at: string;
+    created_at: string;
+  };
+  current_version?: { content: string };
+  schedule?: { scheduled_for: string };
+}): Draft {
+  return {
+    id: raw.draft.id,
+    accountId: raw.draft.account_id,
+    content: raw.current_version?.content ?? "生成中...",
+    status: raw.draft.status === "approved" ? "approved" : raw.draft.status === "rejected" ? "rejected" : "pending",
+    scheduledTime: raw.schedule?.scheduled_for ?? raw.draft.updated_at,
+    generatedAt: raw.draft.created_at,
+    topic: normalizeTopicLabel(raw.draft.topic),
+  };
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeSentenceNoise(value: string) {
+  const words = value.split(" ");
+  if (words.length < 4) return false;
+  const longAlphaWords = words.filter((word) => /^[a-z]{4,}$/i.test(word));
+  return longAlphaWords.length >= 4;
+}
+
+function normalizeTopicLabel(topic?: string | null) {
+  const raw = normalizeWhitespace(topic ?? "");
+  if (!raw) {
+    return "未命名话题";
+  }
+
+  const noUrl = raw.replace(/https?:\/\/\S+/gi, "").replace(/[#*_`~]+/g, "");
+  const trimmed = normalizeWhitespace(noUrl).slice(0, 80);
+  if (!trimmed) {
+    return "未命名话题";
+  }
+
+  if (looksLikeSentenceNoise(trimmed)) {
+    return trimmed
+      .split(" ")
+      .slice(0, 4)
+      .join(" ");
+  }
+
+  return trimmed;
+}
+
+function mapAutopostConfig(
+  accountId: string,
+  policy: Awaited<ReturnType<typeof getAutopostPolicy>>,
+  extras: Record<string, Partial<AutopostConfig>>,
+): AutopostConfig {
+  const base: AutopostConfig = {
+    enabled: policy?.policy.status === "active",
+    frequency: `每天${Math.max(policy?.policy.cadence_body.slot_times.length ?? 1, 1)}次`,
+    scheduledTimes: policy?.policy.cadence_body.slot_times ?? ["09:00"],
+    activeDays: policy?.policy.cadence_body.weekday_codes.map((code) => CODE_TO_DAY[code] ?? code) ?? ["周一", "周三", "周五"],
+    tone: "专业",
+    topics: [],
+    avoidTopics: [],
+    includeHashtags: false,
+    includeEmojis: false,
+  };
+  return { ...base, ...(extras[accountId] ?? {}) };
+}
+
+function buildMessageCategory(title: string, detail: string): MonitoringMessage["category"] {
+  const value = `${title} ${detail}`.toLowerCase();
+  if (value.includes("collab") || value.includes("合作")) return "collab";
+  if (value.includes("商务") || value.includes("quote") || value.includes("price")) return "commerce";
+  if (value.includes("spam") || value.includes("垃圾")) return "spam";
+  return "normal";
+}
+
+function buildMonitoringMessages(input: {
+  notifications: Array<{ id: string; title: string; body: string; created_at: string; read_at?: string; link?: string }>;
+  feed: Array<{ id: string; title: string; detail: string; created_at: string }>;
+  accountsById: Map<string, Account>;
+  readMessageIds: string[];
+}): MonitoringMessage[] {
+  const fromNotifications = input.notifications.map((item) => {
+    const category = buildMessageCategory(item.title, item.body);
+    return {
+      id: `notif:${item.id}`,
+      accountId: "",
+      accountHandle: "workspace",
+      sender: item.title,
+      senderAvatar: "smartkols",
+      category,
+      categoryLabel: item.title,
+      preview: item.body,
+      content: item.body,
+      receivedAt: item.created_at,
+      read: Boolean(item.read_at) || input.readMessageIds.includes(`notif:${item.id}`),
+    } satisfies MonitoringMessage;
+  });
+
+  const fromFeed = input.feed.map((item) => {
+    const category = buildMessageCategory(item.title, item.detail);
+    return {
+      id: `feed:${item.id}`,
+      accountId: "",
+      accountHandle: "workspace",
+      sender: item.title,
+      senderAvatar: "smartkols",
+      category,
+      categoryLabel: item.title,
+      preview: item.detail,
+      content: item.detail,
+      receivedAt: item.created_at,
+      read: input.readMessageIds.includes(`feed:${item.id}`),
+    } satisfies MonitoringMessage;
+  });
+
+  return [...fromNotifications, ...fromFeed].sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 }
 
 function hashString(s: string): number {
   return s.split("").reduce((acc, c, i) => acc + c.charCodeAt(0) * (i + 1), 0);
 }
 
-export function MockStoreProvider({ children }: { children: ReactNode }) {
-  const [accounts, setAccounts] = useState<Account[]>(accountsData as Account[]);
-  const [groups, setGroups] = useState<Group[]>(groupsData as Group[]);
-  const [personas, setPersonas] = useState<Record<string, Persona>>(personasData as Record<string, Persona>);
-  const personaTemplates = templatesData as PersonaTemplate[];
-  const [autopostConfigs, setAutopostConfigs] = useState<Record<string, AutopostConfig>>(autopostData as Record<string, AutopostConfig>);
-  const [sources, setSources] = useState<Record<string, Source[]>>(sourcesData as Record<string, Source[]>);
-  const tweetPreviews = tweetPreviewsData as Record<string, string[]>;
-  const [monitoringMessages, setMonitoringMessages] = useState<MonitoringMessage[]>(monitoringData as MonitoringMessage[]);
-  const [drafts, setDrafts] = useState<Draft[]>(draftsData as Draft[]);
-  const [engagementConfigs, setEngagementConfigs] = useState<Record<string, EngagementConfig>>(engagementConfigsData as Record<string, EngagementConfig>);
-  const [engagementLogs, setEngagementLogs] = useState<EngagementLog[]>(engagementLogsData as EngagementLog[]);
-  const [notifications, setNotifications] = useState<Notification[]>(notificationsData as Notification[]);
-  const [hydrated, setHydrated] = useState(false);
+async function getPersona(accountId: string) {
+  return getBackendData<{ persona: {
+    gender: string;
+    nationality: string;
+    age: number;
+    interests: string[];
+    personality_traits: string[];
+    writing_style: string;
+    bio: string;
+    distillation_sample_tweets: string;
+  } }>(`/api/backend/personas/${encodeURIComponent(accountId)}`);
+}
 
-  // Load from localStorage once on mount (client only)
-  useEffect(() => {
-    setAccounts(loadFromStorage("accounts", accountsData as Account[]));
-    setGroups(loadFromStorage("groups", groupsData as Group[]));
-    setPersonas(loadFromStorage("personas", personasData as Record<string, Persona>));
-    setAutopostConfigs(loadFromStorage("autopostConfigs", autopostData as Record<string, AutopostConfig>));
-    setSources(loadFromStorage("sources", sourcesData as Record<string, Source[]>));
-    setMonitoringMessages(loadFromStorage("monitoringMessages", monitoringData as MonitoringMessage[]));
-    setDrafts(loadFromStorage("drafts", draftsData as Draft[]));
-    setEngagementConfigs(loadFromStorage("engagementConfigs", engagementConfigsData as Record<string, EngagementConfig>));
-    setEngagementLogs(loadFromStorage("engagementLogs", engagementLogsData as EngagementLog[]));
-    setNotifications(loadFromStorage("notifications", notificationsData as Notification[]));
+async function updatePersonaRequest(accountId: string, workspaceId: string, persona: Persona) {
+  return putBackendData<{ persona: unknown }>(`/api/backend/personas/${encodeURIComponent(accountId)}`, {
+    workspace_id: workspaceId,
+    gender: persona.gender,
+    nationality: persona.nationality || "Unknown",
+    age: persona.age || 25,
+    interests: persona.interests,
+    personality_traits: persona.personalityTraits,
+    writing_style: persona.writingStyle || "direct",
+    bio: persona.bio,
+    distillation_sample_tweets: persona.distillationSampleTweets,
+    source: "manual",
+    actor_type: "user",
+  });
+}
+
+async function createAccountRequest(workspaceId: string, account: Account) {
+  return postBackendData<BackendAccount>("/api/backend/accounts", {
+    workspace_id: workspaceId,
+    platform: "x",
+    handle: account.handle,
+    display_name: account.displayName,
+    avatar_url: account.avatarSeed.startsWith("http") ? account.avatarSeed : undefined,
+    group_id: account.groupId,
+  });
+}
+
+export function MockStoreProvider({ children }: { children: ReactNode }) {
+  const [session, setSession] = useState<LiveSessionResponse | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [personas, setPersonas] = useState<Record<string, Persona>>({});
+  const [personaTemplates] = useState<PersonaTemplate[]>([]);
+  const [autopostConfigs, setAutopostConfigs] = useState<Record<string, AutopostConfig>>({});
+  const [sources, setSources] = useState<Record<string, Source[]>>({});
+  const [tweetPreviews, setTweetPreviews] = useState<Record<string, string[]>>({});
+  const [monitoringMessages, setMonitoringMessages] = useState<MonitoringMessage[]>([]);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [engagementConfigs, setEngagementConfigs] = useState<Record<string, EngagementConfig>>({});
+  const [engagementLogs] = useState<EngagementLog[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [trendingTopics, setTrendingTopics] = useState<TrendingTopic[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [hydrated, setHydrated] = useState(false);
+  const sidecarRef = useRef<StoreSidecar>(loadSidecar());
+
+  const workspaceId = session?.selected_workspace.id ?? null;
+
+  async function refreshAll(nextSession?: LiveSessionResponse) {
+    const activeSession = nextSession ?? session ?? await getLiveSession();
+    const currentWorkspaceId = activeSession.selected_workspace.id;
+    const sidecar = sidecarRef.current;
+
+    const [accountsResponse, groupsResponse, draftsResponse, notificationsResponse, trendsResponse, monitoringOverview, settingsOverview] = await Promise.all([
+      listAccounts(currentWorkspaceId),
+      listAccountGroups(currentWorkspaceId),
+      listDrafts({ workspaceId: currentWorkspaceId, limit: 200 }),
+      listNotifications(currentWorkspaceId, 50),
+      listTrends(currentWorkspaceId),
+      getMonitoringOverview(currentWorkspaceId, 30),
+      getWorkspaceSettingsOverview(currentWorkspaceId),
+    ]);
+
+    const nextAccounts = accountsResponse.accounts.map(mapAccount);
+    const nextGroups = groupsResponse.groups.map((item) => ({
+      id: item.group.id,
+      name: item.group.name,
+      color: item.group.color,
+    }));
+    const nextDrafts = draftsResponse.drafts.map(mapDraft);
+    const accountsById = new Map(nextAccounts.map((account) => [account.id, account]));
+
+    const perAccountResults = await Promise.all(nextAccounts.map(async (account) => {
+      const [personaResult, sourcesResult, autopostPolicy] = await Promise.all([
+        getPersona(account.id).catch(() => null),
+        listSources(account.id).catch(() => ({ sources: [] })),
+        getAutopostPolicy(account.id).catch(() => null),
+      ]);
+
+      return {
+        accountId: account.id,
+        persona: mapPersona(personaResult?.persona),
+        sources: sourcesResult.sources.map(mapSource),
+        autopost: mapAutopostConfig(account.id, autopostPolicy, sidecar.autopostExtras),
+      };
+    }));
+
+    const nextPersonas = Object.fromEntries(perAccountResults.map((item) => [item.accountId, item.persona]));
+    const nextSources = Object.fromEntries(perAccountResults.map((item) => [item.accountId, item.sources]));
+    const nextAutopostConfigs = Object.fromEntries(perAccountResults.map((item) => [item.accountId, item.autopost]));
+    const nextTweetPreviews = nextAccounts.reduce<Record<string, string[]>>((acc, account) => {
+      acc[account.id] = nextDrafts.filter((draft) => draft.accountId === account.id).slice(0, 5).map((draft) => draft.content);
+      return acc;
+    }, {});
+
+    setSession(activeSession);
+    setAccounts(nextAccounts);
+    setGroups(nextGroups);
+    setDrafts(nextDrafts);
+    setPersonas(nextPersonas);
+    setSources(nextSources);
+    setAutopostConfigs(nextAutopostConfigs);
+    setTweetPreviews(nextTweetPreviews);
+    setTrendingTopics(
+      trendsResponse.trends
+        .filter((item) => item.status === "active")
+        .sort((a, b) => b.score - a.score)
+        .map((item) => ({
+          topic: normalizeTopicLabel(item.topic),
+          heat: Math.min(100, Math.max(1, Math.round(item.score * 100))),
+          category: item.category,
+        })),
+    );
+    setNotifications(
+      notificationsResponse.notifications.map((item) => ({
+        id: item.id,
+        type: item.type,
+        text: `${item.title}${item.body ? ` · ${item.body}` : ""}`,
+        at: item.created_at,
+        read: Boolean(item.read_at) || sidecar.readNotificationIds.includes(item.id),
+        link: item.link,
+      })),
+    );
+    setMonitoringMessages(buildMonitoringMessages({
+      notifications: monitoringOverview.notifications,
+      feed: monitoringOverview.feed,
+      accountsById,
+      readMessageIds: sidecar.readMessageIds,
+    }));
+    setTeamMembers(
+      settingsOverview.members.map((member) => ({
+        id: member.user.id,
+        name: member.user.name,
+        email: member.user.email,
+        role: member.membership.role_code[0].toUpperCase() + member.membership.role_code.slice(1),
+        avatarSeed: member.user.email,
+        lastActive: "当前环境",
+      })),
+    );
+    setEngagementConfigs(sidecar.engagementConfigs);
     setHydrated(true);
+  }
+
+  useEffect(() => {
+    void refreshAll().catch((error) => {
+      console.error("failed to bootstrap mock store", error);
+      setHydrated(true);
+    });
   }, []);
 
-  // Persist to localStorage when state changes
-  useEffect(() => { if (hydrated) saveToStorage("accounts", accounts); }, [accounts, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("groups", groups); }, [groups, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("personas", personas); }, [personas, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("autopostConfigs", autopostConfigs); }, [autopostConfigs, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("sources", sources); }, [sources, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("monitoringMessages", monitoringMessages); }, [monitoringMessages, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("drafts", drafts); }, [drafts, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("engagementConfigs", engagementConfigs); }, [engagementConfigs, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("engagementLogs", engagementLogs); }, [engagementLogs, hydrated]);
-  useEffect(() => { if (hydrated) saveToStorage("notifications", notifications); }, [notifications, hydrated]);
+  function persistCurrentSidecar() {
+    persistSidecar(sidecarRef.current);
+  }
 
-  const addAccount = (account: Account) => setAccounts((p) => [...p, account]);
-  const addAccounts = (newAccounts: Account[]) => setAccounts((p) => [...p, ...newAccounts]);
-  const deleteAccount = (id: string) => setAccounts((p) => p.filter((a) => a.id !== id));
-  const deleteAccounts = (ids: string[]) => setAccounts((p) => p.filter((a) => !ids.includes(a.id)));
+  const addAccount = (account: Account) => {
+    setAccounts((prev) => [account, ...prev]);
+    if (!workspaceId) return;
+    void createAccountRequest(workspaceId, account)
+      .then(() => refreshAll())
+      .catch((error) => {
+        console.error("add account failed", error);
+        void refreshAll();
+      });
+  };
 
-  const updatePersona = (id: string, persona: Persona) =>
-    setPersonas((p) => ({ ...p, [id]: persona }));
+  const addAccounts = (newAccounts: Account[]) => {
+    setAccounts((prev) => [...newAccounts, ...prev]);
+    if (!workspaceId) return;
+    void importAccounts({
+      workspace_id: workspaceId,
+      create_missing_groups: true,
+      rows: newAccounts.map((account) => ({
+        handle: account.handle,
+        display_name: account.displayName,
+        group_name: groups.find((group) => group.id === account.groupId)?.name,
+      })),
+    })
+      .then(() => refreshAll())
+      .catch((error) => {
+        console.error("import accounts failed", error);
+        void refreshAll();
+      });
+  };
+
+  const deleteAccount = (id: string) => {
+    setAccounts((prev) => prev.filter((item) => item.id !== id));
+    void deleteBackendAccount(id).then(() => refreshAll()).catch(() => refreshAll());
+  };
+
+  const deleteAccounts = (ids: string[]) => {
+    setAccounts((prev) => prev.filter((item) => !ids.includes(item.id)));
+    void Promise.allSettled(ids.map((id) => deleteBackendAccount(id))).then(() => refreshAll());
+  };
+
+  const updatePersona = (id: string, persona: Persona) => {
+    setPersonas((prev) => ({ ...prev, [id]: persona }));
+    if (!workspaceId) return;
+    void updatePersonaRequest(id, workspaceId, persona).catch((error) => {
+      console.error("update persona failed", error);
+      void refreshAll();
+    });
+  };
 
   const applyTemplateToAccounts = (ids: string[], templateId: string) => {
-    const template = personaTemplates.find((t) => t.id === templateId);
-    if (!template) return;
-    setPersonas((p) => {
-      const updated = { ...p };
-      ids.forEach((id) => { updated[id] = { ...template.persona }; });
-      return updated;
-    });
+    console.warn("persona templates are not configured in this compatibility store yet", { ids, templateId });
   };
 
-  const updateAutopost = (id: string, config: AutopostConfig) =>
-    setAutopostConfigs((p) => ({ ...p, [id]: config }));
+  const updateAutopost = (id: string, config: AutopostConfig) => {
+    setAutopostConfigs((prev) => ({ ...prev, [id]: config }));
+    sidecarRef.current = {
+      ...sidecarRef.current,
+      autopostExtras: {
+        ...sidecarRef.current.autopostExtras,
+        [id]: {
+          tone: config.tone,
+          topics: config.topics,
+          avoidTopics: config.avoidTopics,
+          includeHashtags: config.includeHashtags,
+          includeEmojis: config.includeEmojis,
+        },
+      },
+    };
+    persistCurrentSidecar();
+    void upsertAutopostPolicy(id, {
+        cadence_body: {
+          timezone: "Asia/Shanghai",
+          weekday_codes: config.activeDays.map((day) => DAY_TO_CODE[day]).filter(Boolean) as Array<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun">,
+          slot_times: config.scheduledTimes,
+          min_spacing_minutes: 90,
+        },
+        content_strategy_body: {
+          generation_mode: "from_trend",
+          source_types: ["rss", "website", "twitter", "youtube", "substack", "telegram"],
+          max_source_age_days: 7,
+        },
+        execution_body: {
+          draft_review_mode: "manual",
+          auto_queue_publish: false,
+        },
+        status: config.enabled ? "active" : "paused",
+      })
+      .then(() => refreshAll())
+      .catch((error) => {
+      console.error("update autopost failed", error);
+    });
+  };
 
   const applyAutopostToAccounts = (ids: string[], config: Partial<AutopostConfig>) => {
-    setAutopostConfigs((p) => {
-      const updated = { ...p };
-      ids.forEach((id) => { updated[id] = { ...(updated[id] || {}), ...config } as AutopostConfig; });
-      return updated;
+    ids.forEach((id) => {
+      const current = autopostConfigs[id];
+      if (current) {
+        updateAutopost(id, { ...current, ...config });
+      }
     });
   };
 
-  const addSource = (accountId: string, source: Source) =>
-    setSources((p) => ({ ...p, [accountId]: [...(p[accountId] || []), source] }));
+  const addSource = (accountId: string, source: Source) => {
+    setSources((prev) => ({ ...prev, [accountId]: [...(prev[accountId] ?? []), source] }));
+    void createSource(accountId, {
+      type: source.type,
+      name: source.name,
+      url: source.url,
+    }).then(() => refreshAll()).catch((error) => {
+      console.error("add source failed", error);
+      void refreshAll();
+    });
+  };
 
   const addSourcesToAccounts = (ids: string[], newSources: Source[]) => {
-    setSources((p) => {
-      const updated = { ...p };
-      ids.forEach((id) => {
-        const existing = updated[id] || [];
-        const toAdd = newSources.filter((s) => !existing.find((e) => e.url === s.url));
-        updated[id] = [...existing, ...toAdd.map((s) => ({ ...s, id: `src_${Date.now()}_${Math.random()}` }))];
-      });
-      return updated;
+    ids.forEach((id) => {
+      newSources.forEach((source) => addSource(id, source));
     });
   };
 
-  const deleteSource = (accountId: string, sourceId: string) =>
-    setSources((p) => ({ ...p, [accountId]: (p[accountId] || []).filter((s) => s.id !== sourceId) }));
+  const deleteSource = (accountId: string, sourceId: string) => {
+    setSources((prev) => ({ ...prev, [accountId]: (prev[accountId] ?? []).filter((item) => item.id !== sourceId) }));
+    void removeSource(sourceId).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const toggleSourceActive = (accountId: string, sourceId: string) =>
-    setSources((p) => ({
-      ...p,
-      [accountId]: (p[accountId] || []).map((s) => s.id === sourceId ? { ...s, active: !s.active } : s),
+  const toggleSourceActive = (accountId: string, sourceId: string) => {
+    const current = (sources[accountId] ?? []).find((item) => item.id === sourceId);
+    setSources((prev) => ({
+      ...prev,
+      [accountId]: (prev[accountId] ?? []).map((item) => item.id === sourceId ? { ...item, active: !item.active } : item),
     }));
+    if (!current) return;
+    void (current.active ? pauseSource(sourceId) : resumeSource(sourceId)).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const addGroup = (group: Group) => setGroups((p) => [...p, group]);
+  const addGroup = (group: Group) => {
+    setGroups((prev) => [...prev, group]);
+    if (!workspaceId) return;
+    void createAccountGroup({
+      workspace_id: workspaceId,
+      name: group.name,
+      color: group.color,
+    }).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const moveAccountsToGroup = (ids: string[], groupId: string) =>
-    setAccounts((p) => p.map((a) => ids.includes(a.id) ? { ...a, groupId } : a));
+  const moveAccountsToGroup = (ids: string[], groupId: string) => {
+    setAccounts((prev) => prev.map((item) => ids.includes(item.id) ? { ...item, groupId } : item));
+    void assignAccountsToGroup({ account_ids: ids, group_id: groupId }).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const markMessageRead = (id: string) =>
-    setMonitoringMessages((p) => p.map((m) => m.id === id ? { ...m, read: true } : m));
-
-  const INTERESTS_POOL = ["区块链","DeFi","NFT","人工智能","Web3","科技创业","量化交易","元宇宙","开源软件","产品设计","加密货币","机器学习","创业投资","数字资产","去中心化金融","智能合约","Layer2","跨链桥","预言机","DAO治理"];
-  const TRAITS_POOL = ["直率","幽默","理性分析","敢于预测","思维开阔","数据驱动","善于总结","逻辑严密","观点鲜明","乐于分享","批判性思维","长期主义","敢说真话","反传统","独立研究"];
-  const STYLES_POOL = ["短句直击要害","善用数据支撑观点","喜欢用反问句","引用权威观点","分点列举","故事化叙述","直接给结论","用比喻解释复杂概念","先抛结论再论证","加入个人亲身经历"];
-  const NATIONALITIES = ["中国","美国","日本","新加坡","英国","德国","韩国","加拿大","澳大利亚","香港"];
-  const GENDERS = ["male","female","non-binary"];
+  const markMessageRead = (id: string) => {
+    setMonitoringMessages((prev) => prev.map((item) => item.id === id ? { ...item, read: true } : item));
+    sidecarRef.current = {
+      ...sidecarRef.current,
+      readMessageIds: Array.from(new Set([...sidecarRef.current.readMessageIds, id])),
+    };
+    persistCurrentSidecar();
+  };
 
   const randomizePersonas = (ids: string[]) => {
-    setPersonas((p) => {
-      const updated = { ...p };
-      ids.forEach((id) => {
-        const shuffledInterests = [...INTERESTS_POOL].sort(() => Math.random() - 0.5);
-        const shuffledTraits = [...TRAITS_POOL].sort(() => Math.random() - 0.5);
-        updated[id] = {
-          gender: GENDERS[Math.floor(Math.random() * GENDERS.length)],
-          nationality: NATIONALITIES[Math.floor(Math.random() * NATIONALITIES.length)],
-          age: Math.floor(Math.random() * 24) + 22,
-          interests: shuffledInterests.slice(0, 3),
-          personalityTraits: shuffledTraits.slice(0, 4),
-          writingStyle: STYLES_POOL[Math.floor(Math.random() * STYLES_POOL.length)],
-          bio: "",
-          distillationSampleTweets: "",
-        };
+    ids.forEach((id) => {
+      updatePersona(id, {
+        gender: "male",
+        nationality: "中国",
+        age: 28,
+        interests: ["AI", "Crypto", "Tech"],
+        personalityTraits: ["直接", "幽默", "分析型"],
+        writingStyle: "短句，观点鲜明",
+        bio: personas[id]?.bio ?? "",
+        distillationSampleTweets: personas[id]?.distillationSampleTweets ?? "",
       });
-      return updated;
     });
   };
 
-  const approveDraft = (id: string) =>
-    setDrafts((p) => p.map((d) => d.id === id ? { ...d, status: "approved" } : d));
+  const approveDraft = (id: string) => {
+    setDrafts((prev) => prev.map((item) => item.id === id ? { ...item, status: "approved" } : item));
+    void approveBackendDraft(id).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const rejectDraft = (id: string) =>
-    setDrafts((p) => p.map((d) => d.id === id ? { ...d, status: "rejected" } : d));
+  const rejectDraft = (id: string) => {
+    setDrafts((prev) => prev.map((item) => item.id === id ? { ...item, status: "rejected" } : item));
+    void rejectBackendDraft(id).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const regenerateDraft = (id: string) =>
-    setDrafts((p) => p.map((d) => {
-      if (d.id !== id) return d;
-      const variations = [
-        "（重新生成）" + d.content.slice(0, 30) + "... 以另一个角度切入。",
-        "换个角度思考：" + d.content.slice(0, 40) + "。",
-        d.content.split("。")[0] + "。深入一点说，背后的机制其实更有意思。",
-      ];
-      return { ...d, content: variations[Math.floor(Math.random() * variations.length)], generatedAt: new Date().toISOString() };
-    }));
+  const regenerateDraft = (id: string) => {
+    setDrafts((prev) => prev.map((item) => item.id === id ? { ...item, content: "重新生成中...", generatedAt: new Date().toISOString() } : item));
+    void requestDraftRegeneration(id).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const editDraft = (id: string, content: string) =>
-    setDrafts((p) => p.map((d) => d.id === id ? { ...d, content } : d));
+  const editDraft = (id: string, content: string) => {
+    setDrafts((prev) => prev.map((item) => item.id === id ? { ...item, content } : item));
+    void editBackendDraft(id, { content }).then(() => refreshAll()).catch(() => refreshAll());
+  };
 
-  const addDraftsFromTopic = (topic: string) => {
-    const picks = accounts.slice(0, 5);
-    const newDrafts: Draft[] = picks.map((a, i) => ({
-      id: `draft_${Date.now()}_${i}`,
-      accountId: a.id,
-      content: `关于"${topic}"：这是 AI 根据该话题和账号 persona 生成的草稿内容占位。实际实现时会调用 Claude API。`,
-      status: "pending",
-      scheduledTime: new Date(Date.now() + (i + 1) * 3600 * 1000).toISOString(),
+  const addDraftsFromTopic = async (topic: string) => {
+    const normalizedTopic = normalizeTopicLabel(topic);
+    const targets = accounts.filter((item) => item.active).slice(0, 10);
+    const optimisticDrafts = targets.map((account, index) => ({
+      id: `temp-${normalizedTopic}-${account.id}-${index}`,
+      accountId: account.id,
+      content: `正在基于「${normalizedTopic}」为 ${account.displayName} 生成草稿...`,
+      status: "pending" as const,
+      scheduledTime: new Date(Date.now() + (index + 1) * 3_600_000).toISOString(),
       generatedAt: new Date().toISOString(),
-      topic,
+      topic: normalizedTopic,
     }));
-    setDrafts((p) => [...newDrafts, ...p]);
+
+    setDrafts((prev) => [...optimisticDrafts, ...prev]);
+
+    const queueResults = await Promise.allSettled(targets.map(async (account, index) => {
+      const optimisticId = `temp-${normalizedTopic}-${account.id}-${index}`;
+      const result = await generateDraft(account.id, { topic: normalizedTopic });
+
+      void (async () => {
+        try {
+          await waitForAgentTask(result.task_id, { maxAttempts: 60, intervalMs: 2000 });
+        } catch {
+          // Refresh even on failure so temporary placeholders do not stick forever.
+        } finally {
+          setDrafts((prev) => prev.filter((item) => item.id !== optimisticId));
+          void refreshAll().catch((error) => {
+            console.error("refresh after draft generation failed", error);
+          });
+        }
+      })();
+
+      return result.task_id;
+    }));
+
+    const queuedCount = queueResults.filter((item) => item.status === "fulfilled").length;
+
+    if (queuedCount === 0) {
+      setDrafts((prev) => prev.filter((item) => !item.id.startsWith(`temp-${normalizedTopic}-`)));
+      void refreshAll().catch((error) => {
+        console.error("refresh after batch draft queue failed", error);
+      });
+    }
+
+    return queuedCount;
   };
 
   const getEngagementConfig = (accountId: string): EngagementConfig => {
     return engagementConfigs[accountId] || DEFAULT_ENGAGEMENT_CONFIG;
   };
 
-  const updateEngagementConfig = (accountId: string, config: EngagementConfig) =>
-    setEngagementConfigs((p) => ({ ...p, [accountId]: config }));
+  const updateEngagementConfig = (accountId: string, config: EngagementConfig) => {
+    setEngagementConfigs((prev) => ({ ...prev, [accountId]: config }));
+    sidecarRef.current = {
+      ...sidecarRef.current,
+      engagementConfigs: {
+        ...sidecarRef.current.engagementConfigs,
+        [accountId]: config,
+      },
+    };
+    persistCurrentSidecar();
+  };
 
-  const markNotificationRead = (id: string) =>
-    setNotifications((p) => p.map((n) => n.id === id ? { ...n, read: true } : n));
+  const markNotificationRead = (id: string) => {
+    setNotifications((prev) => prev.map((item) => item.id === id ? { ...item, read: true } : item));
+    sidecarRef.current = {
+      ...sidecarRef.current,
+      readNotificationIds: Array.from(new Set([...sidecarRef.current.readNotificationIds, id])),
+    };
+    persistCurrentSidecar();
+  };
 
-  const markAllNotificationsRead = () =>
-    setNotifications((p) => p.map((n) => ({ ...n, read: true })));
+  const markAllNotificationsRead = () => {
+    setNotifications((prev) => prev.map((item) => ({ ...item, read: true })));
+    sidecarRef.current = {
+      ...sidecarRef.current,
+      readNotificationIds: Array.from(new Set([...sidecarRef.current.readNotificationIds, ...notifications.map((item) => item.id)])),
+    };
+    persistCurrentSidecar();
+  };
 
-  const addNotification = (n: Omit<Notification, "id" | "at" | "read">) =>
-    setNotifications((p) => [{ ...n, id: `notif_${Date.now()}`, at: new Date().toISOString(), read: false }, ...p]);
+  const addNotification = (n: Omit<Notification, "id" | "at" | "read">) => {
+    setNotifications((prev) => [{
+      ...n,
+      id: `local-${Date.now()}`,
+      at: new Date().toISOString(),
+      read: false,
+    }, ...prev]);
+  };
 
   const getHealthScore = (accountId: string): HealthScore => {
+    const account = accounts.find((item) => item.id === accountId);
     const h = hashString(accountId);
-    const postingFreq = 10 + (h % 16);  // 10-25
+    const postingFreq = 10 + (h % 16);
     const engagement = 10 + ((h * 3) % 16);
     const consistency = 10 + ((h * 7) % 16);
     const risk = 10 + ((h * 11) % 16);
-    const score = Math.min(100, postingFreq + engagement + consistency + risk);
+    const followerBonus = Math.min(20, Math.floor((account?.followersCount ?? 0) / 5000));
+    const score = Math.min(100, postingFreq + engagement + consistency + risk + followerBonus);
     const riskLevel: "low" | "medium" | "high" = score >= 80 ? "low" : score >= 60 ? "medium" : "high";
     return {
       score,
@@ -477,35 +969,94 @@ export function MockStoreProvider({ children }: { children: ReactNode }) {
         { label: "发帖频率稳定性", value: postingFreq, max: 25 },
         { label: "互动率", value: engagement, max: 25 },
         { label: "内容一致性", value: consistency, max: 25 },
-        { label: "风险信号", value: risk, max: 25 },
+        { label: "风险信号", value: Math.min(25, risk + followerBonus), max: 25 },
       ],
       risk: riskLevel,
     };
   };
 
   const resetDemo = () => {
-    if (typeof window === "undefined") return;
-    const keys = Object.keys(localStorage).filter((k) => k.startsWith(STORAGE_KEY));
-    keys.forEach((k) => localStorage.removeItem(k));
-    window.location.reload();
+    sidecarRef.current = { autopostExtras: {}, engagementConfigs: {}, readMessageIds: [], readNotificationIds: [] };
+    persistCurrentSidecar();
+    void logoutLiveSession().finally(() => {
+      window.location.href = "/login";
+    });
   };
 
+  const value = useMemo<MockStore>(() => ({
+    accounts,
+    groups,
+    personas,
+    personaTemplates,
+    autopostConfigs,
+    sources,
+    tweetPreviews,
+    monitoringMessages,
+    drafts,
+    engagementConfigs,
+    engagementLogs,
+    notifications,
+    trendingTopics,
+    teamMembers,
+    hydrated,
+    addAccount,
+    addAccounts,
+    deleteAccount,
+    deleteAccounts,
+    updatePersona,
+    applyTemplateToAccounts,
+    updateAutopost,
+    applyAutopostToAccounts,
+    addSource,
+    addSourcesToAccounts,
+    deleteSource,
+    toggleSourceActive,
+    addGroup,
+    moveAccountsToGroup,
+    markMessageRead,
+    randomizePersonas,
+    approveDraft,
+    rejectDraft,
+    regenerateDraft,
+    editDraft,
+    addDraftsFromTopic,
+    getEngagementConfig,
+    updateEngagementConfig,
+    markNotificationRead,
+    markAllNotificationsRead,
+    addNotification,
+    getHealthScore,
+    resetDemo,
+  }), [
+    accounts,
+    groups,
+    personas,
+    personaTemplates,
+    autopostConfigs,
+    sources,
+    tweetPreviews,
+    monitoringMessages,
+    drafts,
+    engagementConfigs,
+    engagementLogs,
+    notifications,
+    trendingTopics,
+    teamMembers,
+    hydrated,
+  ]);
+
+  if (!hydrated) {
+    return (
+      <div className="min-h-screen bg-[#F7F7F7] text-[#111111]">
+        <div className="mx-auto max-w-3xl px-8 py-24 text-center text-sm text-[#666666]">
+          正在同步真实 workspace 数据...
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <MockStoreContext.Provider value={{
-      accounts, groups, personas, personaTemplates, autopostConfigs,
-      sources, tweetPreviews, monitoringMessages,
-      drafts, engagementConfigs, engagementLogs, notifications,
-      trendingTopics: TRENDING_TOPICS, teamMembers: TEAM_MEMBERS, hydrated,
-      addAccount, addAccounts, deleteAccount, deleteAccounts,
-      updatePersona, applyTemplateToAccounts,
-      updateAutopost, applyAutopostToAccounts,
-      addSource, addSourcesToAccounts, deleteSource, toggleSourceActive,
-      addGroup, moveAccountsToGroup, markMessageRead, randomizePersonas,
-      approveDraft, rejectDraft, regenerateDraft, editDraft, addDraftsFromTopic,
-      getEngagementConfig, updateEngagementConfig,
-      markNotificationRead, markAllNotificationsRead, addNotification,
-      getHealthScore, resetDemo,
-    }}>
+    <MockStoreContext.Provider value={value}>
       {children}
     </MockStoreContext.Provider>
   );

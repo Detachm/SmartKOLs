@@ -35,11 +35,16 @@ export default function DashboardPage() {
 
   const handleGenerateFromTopic = (topic: string) => {
     setGenerating(topic);
-    setTimeout(() => {
-      addDraftsFromTopic(topic);
-      setGenerating(null);
-      router.push("/drafts");
-    }, 800);
+
+    void addDraftsFromTopic(topic)
+      .then((queuedCount) => {
+        if (queuedCount > 0) {
+          router.push("/drafts");
+        }
+      })
+      .finally(() => {
+        setGenerating(null);
+      });
   };
 
   return (
@@ -86,7 +91,7 @@ export default function DashboardPage() {
                 </div>
               </div>
               <p className="text-[#111111] text-xs font-medium line-clamp-2">
-                {generating === t.topic ? "生成中..." : t.topic}
+                {generating === t.topic ? "正在批量生成草稿..." : t.topic}
               </p>
             </button>
           ))}

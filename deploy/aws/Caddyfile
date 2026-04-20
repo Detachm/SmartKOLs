@@ -1,0 +1,9 @@
+{$APP_DOMAIN} {
+  encode gzip
+  reverse_proxy frontend:3000
+}
+
+{$BACKEND_DOMAIN} {
+  encode gzip
+  reverse_proxy backend-http:3100
+}

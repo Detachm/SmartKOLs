@@ -37,5 +37,12 @@ next-env.d.ts
 
 # local dev artifacts
 .claude/
+.codex
 Test/
 color-preview.html
+
+# runtime data
+backend/runtime/
+data/*.db
+data/runtime/*
+!data/runtime/.gitkeep
