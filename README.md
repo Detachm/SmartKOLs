@@ -1,129 +1,197 @@
 # SmartKOLs
 
-AI 驱动的 Twitter KOL 矩阵管理平台 —— 从一个后台管理数百个 Twitter 账号，每个账号都有独立人格、独立互动行为、独立风控指标。
+SmartKOLs 是一个面向 X / Twitter 账号矩阵运营的 AI 工作台，用来管理多账号人格、信息源、内容生产、审核排期、自动发布、互动触达和运行监控。
 
-当前线上临时入口已经弃用，后续建议直接按 AWS 部署文档上线。
-
----
+它不是纯前端 demo。当前代码包含前端、backend（后端服务）、worker（异步执行进程）和 SQLite（本地持久化数据库）运行链路，适合本地评审、功能演示和后续部署到 AWS。
 
 ## 核心能力
 
-**独立人格系统**
-每个账号有自己的性别、国籍、年龄、兴趣、性格特征和写作风格。200 个账号就是 200 套独立的人格配置，AI 生成内容时以此为基础，避免矩阵推文同质化。
+### 账号矩阵管理
 
-**互动自动化引擎**
-不只是发推 —— 每个账号独立配置自动关注、自动转发、自动评论、自动回复粉丝。带延迟随机化（30 分钟~2 小时）和每日频率限制，模拟真人行为模式。
+- 批量管理 X / Twitter 账号
+- 账号分组、健康状态、凭证状态、自动化 readiness（就绪度）检查
+- 每个账号有独立人格、信息源、发帖策略和互动策略
 
-**内容生产线**
-信息源聚合 → AI 生成推文草稿 → 人工审核（批准/编辑/拒绝/重新生成） → 内容日历排期 → 按计划发布。全流程可控，AI 是副驾，运营者是驾驶员。
+### 人格与内容生产
 
-**账号安全风控**
-每个账号 0-100 健康评分（发帖频率 / 互动率 / 内容一致性 / 风险信号），绿/黄/红三档分级。异常时通知中心推送预警。
+- 账号 persona（人格画像）配置与蒸馏
+- 信息源抓取、趋势提取、content brief（内容简报）生成
+- brief 驱动 draft（草稿）生成，避免只靠主题空写
+- X 280 字符限制校验与自动缩短
+- AI 味检测和风格守卫，降低模板化内容
 
-**矩阵级运营视图**
-概览看板一眼看全局 · 内容日历展示整个矩阵的周排期 · 热门话题一键批量生成草稿 · Cmd+K 全局搜索 · 监控中心自动分类私信并报警到飞书/Telegram。
+### 审核、排期、发布
 
----
+- 草稿审核：批准、编辑、拒绝、重新生成
+- 内容日历按时间窗口排期
+- 发布任务由 worker 执行，不把长任务塞进 HTTP 请求
+- 失败发布支持错误分类、重试和人工处理
+
+### 互动与监控
+
+- 评论、回复、转发、关注等互动策略建模
+- 互动候选池和收件箱拉取任务
+- 监控中心展示 worker、队列、失败项、操作队列和运行心跳
+- 自动化链路具备显式失败状态，不依赖静默降级
+
+### AI BD
+
+- 新增 AI BD 工作台前端入口
+- 用于后续围绕 LBank 已上线资产，监测 X 讨论并沉淀触达线索
+- 当前是前端界面和流程骨架，真实触达执行接口后续接入
+
+## 技术架构
+
+```text
+Next.js App Router
+  ├─ 页面与控制台 UI
+  ├─ Route Handlers 代理后端 API
+  └─ X OAuth 回调入口
+
+Backend
+  ├─ HTTP router
+  ├─ 账号、人格、信息源、草稿、排期、互动、监控等模块
+  ├─ SQLite repositories / read models
+  └─ model gateway / connector-x / source fetch adapters
+
+Worker
+  ├─ autopost 执行
+  ├─ source fetch 调度
+  ├─ trend refresh
+  ├─ publish jobs
+  └─ engagement automation
+```
 
 ## 快速开始
 
+环境要求：
+
+- Node.js 20+
+- npm
+
+安装依赖：
+
 ```bash
-# 安装依赖
-npm install
+npm ci
+```
 
-# 检查本地配置
+检查配置：
+
+```bash
 npm run doctor
+```
 
-# 启动后端 HTTP
+启动 backend：
+
+```bash
 npm run backend:dev:local
+```
 
-# 启动前端
+另开一个终端启动前端：
+
+```bash
 npm run dev
+```
 
-# 如需跑真实异步执行链，再启动 worker
+需要跑自动化链路时，再启动 worker：
+
+```bash
 npm run backend:worker:local -- all
+```
 
-# 浏览器打开
+浏览器打开：
+
+```bash
 open http://localhost:3000
 ```
 
-完整本地说明见 [docs/local-run.md](docs/local-run.md)。
+更完整的本地运行说明见 [docs/local-run.md](docs/local-run.md)。
 
----
+## 常用命令
+
+```bash
+# 前端生产构建
+npm run build
+
+# backend TypeScript 类型检查
+npm run backend:typecheck
+
+# backend 测试
+npm run test:backend
+
+# 当前链路 smoke test
+npm run smoke:current
+
+# 路由能力 smoke test
+npm run smoke:routes
+
+# 自动化端到端 smoke test
+npm run smoke:e2e
+```
 
 ## 项目结构
 
-```
+```text
 src/
-├── app/                    # 页面路由（Next.js App Router）
-│   ├── dashboard/          # 概览看板
-│   ├── accounts/           # 账号管理 + 账号详情（6 个子页）
-│   ├── calendar/           # 内容日历
-│   ├── drafts/             # 内容审核
-│   ├── ai-bd/              # AI BD 触达工作台
-│   ├── monitoring/         # 监控中心
-│   ├── settings/           # 设置 + 团队
-│   ├── api/                # Next Route Handlers 后端代理
-│   ├── auth/               # X OAuth 回调
-│   └── login/              # 登录页
-├── components/
-│   ├── ui/                 # 基础 UI 组件（button/input/dialog 等）
-│   ├── layout/             # 导航、侧边栏、Cmd+K、通知中心
-│   ├── accounts/           # 账号相关组件（健康分卡片等）
-│   └── persona/            # 人格配置组件（表单、蒸馏、标签输入）
-└── lib/                    # 后端 API 客户端、session、工具函数
+  app/                    Next.js 页面、API 代理、登录与 OAuth 回调
+  components/             UI、布局、账号、人设相关组件
+  lib/                    前端 API client、session、工具函数
+
+backend/
+  src/app/                启动、HTTP router、worker runner
+  src/contracts/          API / job contract 类型
+  src/core/               错误、ID、时间、校验等基础能力
+  src/infrastructure/     SQLite、artifact store、外部依赖适配
+  src/modules/            业务模块
+
+docs/                     本地运行、部署、X OAuth 文档
+deploy/aws/               AWS + Docker Compose + Caddy 部署配置
+scripts/                  本地启动、doctor、smoke test 脚本
 ```
 
----
+## 环境配置
 
-## 技术栈
+仓库只提交示例环境文件，不提交真实密钥：
 
-- **框架**：Next.js 14 (App Router) + TypeScript
-- **样式**：Tailwind CSS（响应式，支持桌面端 + 移动端）
-- **UI**：自建 shadcn 风格组件 + Radix UI
-- **状态**：真实 backend 读写 + SQLite 持久化
-- **部署**：本地开发可走 Next + backend + worker；正式环境建议走 AWS EC2 + Docker Compose + Caddy
+- `.env.local.example`
+- `.env.backend-http.example`
+- `.env.backend-worker.example`
+- `.env.openai.example`
+- `.env.zhipu.example`
+- `deploy/aws/.env.example`
 
----
+本地运行时按需复制为实际 `.env` 文件。真实 `.env` 已被 `.gitignore` 排除。
 
-## 当前状态
+## 当前验证状态
 
-当前仓库已经不是纯前端演示项目。
+最近一次合并到 `main` 前已通过：
 
-- 前端通过 Next Route Handlers 代理真实 backend
-- 本地登录使用真实 `user + workspace` session cookie
-- 主要页面默认读取真实 SQLite 数据
-- 长任务仍由独立 worker 执行，不在 HTTP 请求里偷偷跑完
+```bash
+npm run build
+npm run backend:typecheck
+npm run test:backend
+```
 
-当前主链是“前端 + backend + worker”的真实运行模式；历史前端假数据层已经移除。
+后端测试当前为 101 个用例全通过。
 
----
+## 已知事项
 
-## 文档
-
-当前优先使用这些文档：
-
-- [docs/local-run.md](docs/local-run.md)
-  - 本地运行说明
-- [docs/aws-deployment.md](docs/aws-deployment.md)
-  - AWS 部署说明
-- [docs/vercel-x-auth.md](docs/vercel-x-auth.md)
-  - X OAuth 与 Vercel 回调说明
-- [backend/docs/RUNBOOK.md](backend/docs/RUNBOOK.md)
-  - 运行排障说明
-
----
+- `next build` 仍有非阻塞 lint 警告，主要是部分 `<img>` 可迁移到 `next/image`，以及一个 `useEffect` 依赖提示。
+- `npm audit` 仍提示 Next.js 14 相关安全公告。自动非破坏性修复已经执行；彻底消除需要强升 Next.js 到 16，属于破坏性升级，建议单独开分支处理。
+- AI BD 当前只完成前端工作台和信息架构，真实触达执行链路后续接入。
 
 ## 部署
 
-生产部署请直接看：
+生产部署建议使用：
 
-- [docs/aws-deployment.md](docs/aws-deployment.md)
+- AWS EC2
+- Docker Compose
+- Caddy
+- SQLite 持久化目录
+- backend HTTP 进程 + worker 常驻进程
 
-这份文档覆盖：
+部署说明见 [docs/aws-deployment.md](docs/aws-deployment.md)。
 
-- 前端正式公网域名
-- backend 正式公网域名
-- worker 常驻运行
-- SQLite / artifacts 持久化
-- 适合直接在 AWS EC2 落地
+X OAuth / Vercel 回调说明见 [docs/vercel-x-auth.md](docs/vercel-x-auth.md)。
+
+运行排障说明见 [backend/docs/RUNBOOK.md](backend/docs/RUNBOOK.md)。
