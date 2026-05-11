@@ -20,6 +20,8 @@ export interface CredentialSecretStore {
   readOAuth1Secret(secretRef: string): Promise<OAuth1CredentialSecret>;
   readOAuth2Secret(secretRef: string): Promise<OAuth2CredentialSecret>;
   readApiKeySecret(secretRef: string): Promise<ApiKeyCredentialSecret>;
+  upsertOAuth1Secret(existingSecretRef: string | undefined, secret: OAuth1CredentialSecret): Promise<string>;
   upsertOAuth2Secret(existingSecretRef: string | undefined, secret: OAuth2CredentialSecret): Promise<string>;
+  upsertApiKeySecret(existingSecretRef: string | undefined, secret: ApiKeyCredentialSecret): Promise<string>;
   deleteManagedSecret(secretRef: string | undefined): Promise<void>;
 }

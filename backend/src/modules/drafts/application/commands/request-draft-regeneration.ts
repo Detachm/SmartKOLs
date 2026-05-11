@@ -55,10 +55,13 @@ export class RequestDraftRegeneration {
 
     const metadata = parseDraftVersionMetadata(currentVersion.metadata);
     const contentBriefId = typeof metadata.content_brief_id === "string" ? metadata.content_brief_id.trim() : "";
-    const topic = contentBriefId ? undefined : existing.topic;
-    if (!topic && !contentBriefId) {
-      throw new AppError("INVALID_STATE", "draft regeneration requires topic or content_brief_id", {
-        details: { draft_id: draftId, version_id: currentVersion.id },
+    if (!contentBriefId) {
+      throw new AppError("INVALID_STATE", "draft regeneration requires content_brief_id; legacy topic-only drafts must be rebuilt from a new brief", {
+        details: {
+          draft_id: draftId,
+          version_id: currentVersion.id,
+          topic: existing.topic,
+        },
       });
     }
 
@@ -72,9 +75,8 @@ export class RequestDraftRegeneration {
       target_id: existing.account_id,
       payload: JSON.stringify({
         account_id: existing.account_id,
-        topic,
         trend_id: existing.trend_id,
-        content_brief_id: contentBriefId || undefined,
+        content_brief_id: contentBriefId,
       }),
       created_at: now,
     });
@@ -102,8 +104,7 @@ export class RequestDraftRegeneration {
       after_state: JSON.stringify({
         draft_id: existing.id,
         regeneration_task_id: task.id,
-        content_brief_id: contentBriefId || undefined,
-        topic,
+        content_brief_id: contentBriefId,
       }),
       created_at: now,
     });
@@ -127,7 +128,7 @@ function parseDraftVersionMetadata(metadata: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     }
   } catch {
-    // ignore malformed metadata and fall back to topic-only regeneration
+    // ignore malformed metadata and force the caller onto the explicit brief-backed path
   }
 
   return {};

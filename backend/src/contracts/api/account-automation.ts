@@ -21,6 +21,7 @@ export interface AccountAutomationNoActionPreview {
 export interface AccountAutomationOverviewResponse {
   account_id: string;
   workspace_id: string;
+  account_handle?: string;
   orchestration_status: "inactive" | "active" | "paused";
   has_active_automation: boolean;
   next_due_at?: string;
@@ -34,6 +35,9 @@ export interface AccountAutomationOverviewResponse {
     updated_at: string;
   };
   pending_draft_count: number;
+  pending_manual_review_draft_count?: number;
+  pending_auto_approve_draft_count?: number;
+  max_pending_manual_review_drafts: number;
   queued_or_running_content_tasks: Array<{
     task_id: string;
     task_type: "content_brief.generate" | "draft.generate";
@@ -60,6 +64,7 @@ export interface AccountAutomationOverviewResponse {
     next_run_after: string;
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts: number;
   };
   active_autopost_run?: {
     run_id: string;
@@ -113,6 +118,8 @@ export interface AccountAutomationOverviewResponse {
     finished_at?: string;
     chosen_action?: AccountAutomationActionPreview | AccountAutomationNoActionPreview;
     eligible_actions: AccountAutomationActionPreview[];
+    failure_scope?: "autopost" | "engagement" | "content" | "system";
+    is_isolated_failure?: boolean;
     error_code?: string;
     error_message?: string;
   }>;

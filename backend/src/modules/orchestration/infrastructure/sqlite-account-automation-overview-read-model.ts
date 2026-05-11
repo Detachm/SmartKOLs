@@ -1,4 +1,6 @@
 import type { SqliteStatementExecutor } from "../../../infrastructure/db/sqlite-executor";
+import { DEFAULT_MAX_PENDING_MANUAL_REVIEW_DRAFTS } from "../../autopost/domain/autopost-policy";
+import { createEngagementPolicy, type EngagementPolicyRule } from "../../engagement/domain/engagement-policy";
 import type {
   AccountAutomationOverview,
   AccountAutomationOverviewReadModel,
@@ -7,6 +9,7 @@ import type {
 interface AccountRow {
   id: string;
   workspace_id: string;
+  handle: string;
 }
 
 interface StateRow {
@@ -28,6 +31,7 @@ interface CountRow {
 
 interface EngagementPolicyStatusRow {
   status: "active" | "paused";
+  policy_body?: string | null;
 }
 
 interface TaskRow {
@@ -59,6 +63,7 @@ interface AutopostPolicyRow {
   next_run_after: string;
   draft_review_mode: "manual" | "auto_approve";
   auto_queue_publish: 0 | 1;
+  max_pending_manual_review_drafts?: number | null;
 }
 
 interface AutopostRunRow {
@@ -100,7 +105,7 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
 
   async getAccountAutomationOverview(accountId: string): Promise<AccountAutomationOverview | null> {
     const account = this.db.get<AccountRow>(
-      `SELECT id, workspace_id
+      `SELECT id, workspace_id, handle
       FROM accounts
       WHERE id = ?`,
       [accountId],
@@ -121,6 +126,40 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
       `SELECT COUNT(*) AS count
       FROM drafts
       WHERE account_id = ? AND status = 'pending'`,
+      [accountId],
+    )?.count ?? 0;
+    const pendingManualReviewDraftCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM drafts d
+      WHERE d.account_id = ?
+        AND d.status = 'pending'
+        AND COALESCE((
+          SELECT json_extract(ap.execution_body, '$.draft_review_mode')
+          FROM autopost_runs apr
+          INNER JOIN autopost_policies ap ON ap.id = apr.policy_id
+          LEFT JOIN agent_runs ar ON ar.id = d.generated_by_run_id
+          WHERE apr.draft_id = d.id
+            OR (ar.task_id IS NOT NULL AND apr.draft_task_id = ar.task_id)
+          ORDER BY apr.updated_at DESC, apr.id DESC
+          LIMIT 1
+        ), 'manual') != 'auto_approve'`,
+      [accountId],
+    )?.count ?? 0;
+    const pendingAutoApproveDraftCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM drafts d
+      WHERE d.account_id = ?
+        AND d.status = 'pending'
+        AND COALESCE((
+          SELECT json_extract(ap.execution_body, '$.draft_review_mode')
+          FROM autopost_runs apr
+          INNER JOIN autopost_policies ap ON ap.id = apr.policy_id
+          LEFT JOIN agent_runs ar ON ar.id = d.generated_by_run_id
+          WHERE apr.draft_id = d.id
+            OR (ar.task_id IS NOT NULL AND apr.draft_task_id = ar.task_id)
+          ORDER BY apr.updated_at DESC, apr.id DESC
+          LIMIT 1
+        ), 'manual') = 'auto_approve'`,
       [accountId],
     )?.count ?? 0;
     const contentTasks = this.db.all<TaskRow>(
@@ -181,7 +220,8 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
         json_extract(content_strategy_body, '$.generation_mode') AS generation_mode,
         next_run_after,
         json_extract(execution_body, '$.draft_review_mode') AS draft_review_mode,
-        json_extract(execution_body, '$.auto_queue_publish') AS auto_queue_publish
+        json_extract(execution_body, '$.auto_queue_publish') AS auto_queue_publish,
+        json_extract(execution_body, '$.max_pending_manual_review_drafts') AS max_pending_manual_review_drafts
       FROM autopost_policies
       WHERE account_id = ? AND status = 'active' AND next_run_after IS NOT NULL
       ORDER BY next_run_after ASC, id ASC
@@ -228,20 +268,35 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
           [activeAutopostRun.draft_task_id],
         )?.id
         : undefined);
+    const maxPendingManualReviewDrafts = normalizeMaxPendingManualReviewDrafts(
+      nextDueAutopostPolicy?.max_pending_manual_review_drafts,
+    );
     const activeAutomationCount = this.db.get<CountRow>(
       `SELECT (
         SELECT COUNT(*) FROM autopost_policies WHERE account_id = ? AND status = 'active'
       ) + (
         SELECT COUNT(*) FROM recurring_brief_plans WHERE account_id = ? AND status = 'active'
+      ) + (
+        SELECT COUNT(*) FROM engagement_policies WHERE account_id = ? AND status = 'active'
       ) AS count`,
-      [accountId, accountId],
+      [accountId, accountId, accountId],
     )?.count ?? 0;
     const engagementPolicy = this.db.get<EngagementPolicyStatusRow>(
-      `SELECT status
+      `SELECT status, policy_body
       FROM engagement_policies
       WHERE account_id = ?`,
       [accountId],
     );
+    const engagementPolicyBody = engagementPolicy?.policy_body
+      ? createEngagementPolicy({
+        id: "read-model",
+        workspace_id: account.workspace_id,
+        account_id: account.id,
+        policy_body: JSON.parse(engagementPolicy.policy_body) as EngagementPolicyRule,
+        status: engagementPolicy.status,
+        updated_at: "1970-01-01T00:00:00.000Z",
+      }).policy_body
+      : undefined;
     const openEngagementThreadCount = this.db.get<CountRow>(
       `SELECT COUNT(*) AS count
       FROM engagement_threads
@@ -311,6 +366,42 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
       LIMIT 1`,
       [accountId],
     );
+    const todayFollowCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM connector_requests
+      WHERE account_id = ?
+        AND endpoint_code = 'user.follow'
+        AND status = 'succeeded'
+        AND date(COALESCE(finished_at, started_at)) = date('now')`,
+      [accountId],
+    )?.count ?? 0;
+    const todayRepostCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM connector_requests
+      WHERE account_id = ?
+        AND endpoint_code = 'post.repost'
+        AND status = 'succeeded'
+        AND date(COALESCE(finished_at, started_at)) = date('now')`,
+      [accountId],
+    )?.count ?? 0;
+    const todayCommentCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM connector_requests
+      WHERE account_id = ?
+        AND endpoint_code = 'post.comment'
+        AND status = 'succeeded'
+        AND date(COALESCE(finished_at, started_at)) = date('now')`,
+      [accountId],
+    )?.count ?? 0;
+    const todayReplyCount = this.db.get<CountRow>(
+      `SELECT COUNT(*) AS count
+      FROM connector_requests
+      WHERE account_id = ?
+        AND endpoint_code = 'post.reply'
+        AND status = 'succeeded'
+        AND date(COALESCE(finished_at, started_at)) = date('now')`,
+      [accountId],
+    )?.count ?? 0;
     const nextReplyCandidateThread = this.db.get<EngagementThreadCandidateRow>(
       `SELECT
         et.id,
@@ -410,6 +501,7 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
     return {
       account_id: account.id,
       workspace_id: account.workspace_id,
+      account_handle: account.handle,
       state: state ? {
         account_id: state.account_id,
         workspace_id: state.workspace_id,
@@ -425,6 +517,9 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
       has_active_automation: activeAutomationCount > 0,
       next_due_at: nextDueAt ?? undefined,
       pending_draft_count: pendingDraftCount,
+      pending_manual_review_draft_count: pendingManualReviewDraftCount,
+      pending_auto_approve_draft_count: pendingAutoApproveDraftCount,
+      max_pending_manual_review_drafts: maxPendingManualReviewDrafts,
       queued_or_running_content_tasks: contentTasks.map((task) => ({
         task_id: task.id,
         task_type: task.task_type,
@@ -451,6 +546,7 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
         next_run_after: nextDueAutopostPolicy.next_run_after,
         draft_review_mode: nextDueAutopostPolicy.draft_review_mode,
         auto_queue_publish: Boolean(nextDueAutopostPolicy.auto_queue_publish),
+        max_pending_manual_review_drafts: maxPendingManualReviewDrafts,
       } : undefined,
       active_autopost_run: activeAutopostRun ? {
         run_id: activeAutopostRun.id,
@@ -479,11 +575,16 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
         last_message_at: nextReplyCandidateThread.last_message_at,
       } : undefined,
       engagement_automation: {
+        policy_body: engagementPolicyBody,
         policy_status: engagementPolicy?.status ?? "not_configured",
         open_thread_count: openEngagementThreadCount,
         policy_blocked_open_thread_count: policyBlockedOpenThreadCount,
         pending_review_reply_count: pendingReviewReplyCount,
         approved_reply_pending_send_count: approvedReplyPendingSendCount,
+        today_follow_count: todayFollowCount,
+        today_repost_count: todayRepostCount,
+        today_comment_count: todayCommentCount,
+        today_reply_count: todayReplyCount,
         next_pending_review_reply: nextPendingReviewReply ? {
           proposal_id: nextPendingReviewReply.id,
           thread_id: nextPendingReviewReply.thread_id,
@@ -498,4 +599,10 @@ export class SqliteAccountAutomationOverviewReadModel implements AccountAutomati
       },
     };
   }
+}
+
+function normalizeMaxPendingManualReviewDrafts(value: unknown) {
+  return Number.isInteger(value) && (value as number) >= 1
+    ? value as number
+    : DEFAULT_MAX_PENDING_MANUAL_REVIEW_DRAFTS;
 }

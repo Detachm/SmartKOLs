@@ -13,11 +13,23 @@ export interface GenerateReplyProposalDependencies {
 export class GenerateReplyProposal {
   constructor(private readonly deps: GenerateReplyProposalDependencies) {}
 
-  async execute(threadId: string) {
+  async execute(threadId: string, options?: { preferred_style?: string }) {
     const thread = await this.deps.engagement.findThreadById(threadId);
     if (!thread) {
       throw new AppError("NOT_FOUND", "engagement thread not found", {
         details: { thread_id: threadId },
+      });
+    }
+
+    const existingProposals = await this.deps.engagement.listReplyProposalsByThreadId(thread.id);
+    const activeProposal = existingProposals.find((proposal) => proposal.status !== "rejected");
+    if (activeProposal) {
+      throw new AppError("CONFLICT", "reply proposal already exists for thread", {
+        details: {
+          thread_id: thread.id,
+          proposal_id: activeProposal.id,
+          proposal_status: activeProposal.status,
+        },
       });
     }
 
@@ -35,7 +47,11 @@ export class GenerateReplyProposal {
       task_type: "engagement.reply_propose",
       target_type: "engagement_thread",
       target_id: thread.id,
-      payload: JSON.stringify({ thread_id: thread.id, account_id: thread.account_id }),
+      payload: JSON.stringify({
+        thread_id: thread.id,
+        account_id: thread.account_id,
+        preferred_style: options?.preferred_style,
+      }),
       created_at: this.deps.now(),
     });
     await this.deps.runtime.createTask(task);

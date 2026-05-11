@@ -1,9 +1,12 @@
 import { AppError } from "../../../core/errors/app-error";
 import type {
   TwitterAccountProfile,
+  TwitterCommentResult,
   TwitterCreatedPost,
   TwitterDirectMessageResult,
+  TwitterFollowResult,
   TwitterInboxPullResult,
+  TwitterRepostResult,
   TwitterRateLimitSnapshot,
   TwitterReplyResult,
   TwitterTimelinePullResult,
@@ -50,6 +53,9 @@ interface XApiTweet {
   author_id?: string;
   conversation_id?: string;
   created_at?: string;
+  public_metrics?: {
+    like_count?: number;
+  };
 }
 
 interface XApiDmEvent {
@@ -184,6 +190,98 @@ export class XApiClient {
 
     return {
       external_reply_id: requireString(response.data.id, "data.id"),
+      raw_response: response.raw_response,
+      platform_status_code: response.platform_status_code,
+      rate_limit: response.rate_limit,
+    };
+  }
+
+  async commentOnPost(input: {
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    comment_on_external_post_id: string;
+    text: string;
+  }): Promise<TwitterCommentResult> {
+    const response = await this.requestJson<{ id: string; text: string }>({
+      method: "POST",
+      path: "/2/tweets",
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "post.comment",
+      body: {
+        text: input.text,
+        reply: {
+          in_reply_to_tweet_id: input.comment_on_external_post_id,
+        },
+      },
+    });
+
+    return {
+      external_comment_id: requireString(response.data.id, "data.id"),
+      raw_response: response.raw_response,
+      platform_status_code: response.platform_status_code,
+      rate_limit: response.rate_limit,
+    };
+  }
+
+  async followUser(input: {
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    target_handle: string;
+  }): Promise<TwitterFollowResult> {
+    const authenticatedUser = await this.getAuthenticatedUser(input);
+    const targetUser = await this.requestJson<XApiAuthenticatedUser>({
+      method: "GET",
+      path: `/2/users/by/username/${encodeURIComponent(normalizeHandle(input.target_handle))}`,
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "user.lookup",
+      query: {
+        "user.fields": "username,name",
+      },
+    });
+    const response = await this.requestJson<{ following?: boolean; pending_follow?: boolean }>({
+      method: "POST",
+      path: `/2/users/${encodeURIComponent(authenticatedUser.id)}/following`,
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "user.follow",
+      body: {
+        target_user_id: requireString(targetUser.data.id, "data.id"),
+      },
+    });
+
+    return {
+      target_user_id: requireString(targetUser.data.id, "data.id"),
+      target_handle: optionalString(targetUser.data.username),
+      following: response.data.following === true,
+      pending_follow: response.data.pending_follow === true ? true : undefined,
+      raw_response: response.raw_response,
+      platform_status_code: response.platform_status_code,
+      rate_limit: response.rate_limit,
+    };
+  }
+
+  async repostPost(input: {
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    target_post_id: string;
+  }): Promise<TwitterRepostResult> {
+    const authenticatedUser = await this.getAuthenticatedUser(input);
+    const response = await this.requestJson<{ retweeted?: boolean }>({
+      method: "POST",
+      path: `/2/users/${encodeURIComponent(authenticatedUser.id)}/retweets`,
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "post.repost",
+      body: {
+        tweet_id: input.target_post_id,
+      },
+    });
+
+    return {
+      reposted: response.data.retweeted === true,
+      target_post_id: input.target_post_id,
       raw_response: response.raw_response,
       platform_status_code: response.platform_status_code,
       rate_limit: response.rate_limit,
@@ -331,7 +429,7 @@ export class XApiClient {
       secret_ref: input.secret_ref,
       endpoint_code: "timeline.user.posts",
       query: {
-        "tweet.fields": "conversation_id,created_at,text",
+        "tweet.fields": "conversation_id,created_at,text,public_metrics",
         exclude: "retweets",
         max_results: "100",
       },
@@ -344,6 +442,7 @@ export class XApiClient {
         kind: tweet.conversation_id && tweet.conversation_id !== tweet.id ? "reply" : "post",
         content: requireString(tweet.text, "tweet.text"),
         occurred_at: requireString(tweet.created_at, "tweet.created_at"),
+        like_count: typeof tweet.public_metrics?.like_count === "number" ? tweet.public_metrics.like_count : undefined,
         raw_payload: JSON.stringify(tweet),
       })),
       raw_response: JSON.stringify({
@@ -352,6 +451,101 @@ export class XApiClient {
       }),
       platform_status_code: timelineResponse.platform_status_code,
       rate_limit: timelineResponse.rate_limit ?? userResponse.rate_limit,
+    };
+  }
+
+  async lookupPosts(input: {
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    post_ids: string[];
+  }): Promise<TwitterTimelinePullResult> {
+    const ids = Array.from(new Set(input.post_ids.map((item) => item.trim()).filter((item) => item !== ""))).slice(0, 100);
+    if (ids.length === 0) {
+      return {
+        posts: [],
+        raw_response: JSON.stringify({ data: [] }),
+        platform_status_code: "200",
+      };
+    }
+
+    const response = await this.requestJson<XApiTweet[]>({
+      method: "GET",
+      path: "/2/tweets",
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "tweets.lookup",
+      empty_data: [],
+      query: {
+        ids: ids.join(","),
+        "tweet.fields": "author_id,conversation_id,created_at,text,public_metrics",
+        expansions: "author_id",
+        "user.fields": "username",
+      },
+    });
+    const users = indexIncludedUsers(response.includes);
+
+    return {
+      posts: response.data.map((tweet) => ({
+        external_post_id: requireString(tweet.id, "tweet.id"),
+        handle: tweet.author_id ? users.get(tweet.author_id) ?? "unknown" : "unknown",
+        kind: tweet.conversation_id && tweet.conversation_id !== tweet.id ? "reply" : "post",
+        conversation_id: optionalString(tweet.conversation_id),
+        content: requireString(tweet.text, "tweet.text"),
+        occurred_at: requireString(tweet.created_at, "tweet.created_at"),
+        like_count: typeof tweet.public_metrics?.like_count === "number" ? tweet.public_metrics.like_count : undefined,
+        raw_payload: JSON.stringify(tweet),
+      })),
+      raw_response: response.raw_response,
+      platform_status_code: response.platform_status_code,
+      rate_limit: response.rate_limit,
+    };
+  }
+
+  async searchRecentPosts(input: {
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    query: string;
+    max_results?: number;
+  }): Promise<TwitterTimelinePullResult> {
+    const query = input.query.trim();
+    if (!query) {
+      return {
+        posts: [],
+        raw_response: JSON.stringify({ data: [] }),
+        platform_status_code: "200",
+      };
+    }
+
+    const response = await this.requestJson<XApiTweet[]>({
+      method: "GET",
+      path: "/2/tweets/search/recent",
+      provider: input.provider,
+      secret_ref: input.secret_ref,
+      endpoint_code: "timeline.search.recent",
+      empty_data: [],
+      query: {
+        query,
+        "tweet.fields": "author_id,conversation_id,created_at,text,public_metrics",
+        expansions: "author_id",
+        "user.fields": "username",
+        max_results: String(Math.max(10, Math.min(100, input.max_results ?? 20))),
+      },
+    });
+    const users = indexIncludedUsers(response.includes);
+
+    return {
+      posts: response.data.map((tweet) => ({
+        external_post_id: requireString(tweet.id, "tweet.id"),
+        handle: tweet.author_id ? users.get(tweet.author_id) ?? "unknown" : "unknown",
+        kind: tweet.conversation_id && tweet.conversation_id !== tweet.id ? "reply" : "post",
+        content: requireString(tweet.text, "tweet.text"),
+        occurred_at: requireString(tweet.created_at, "tweet.created_at"),
+        like_count: typeof tweet.public_metrics?.like_count === "number" ? tweet.public_metrics.like_count : undefined,
+        raw_payload: JSON.stringify(tweet),
+      })),
+      raw_response: response.raw_response,
+      platform_status_code: response.platform_status_code,
+      rate_limit: response.rate_limit,
     };
   }
 
@@ -474,10 +668,13 @@ export class XApiClient {
         };
       }
 
-      throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "X API response is missing data", {
+      const message = extractXApiErrorMessage(parsed) ?? "X API response is missing data";
+      throw new AppError("EXTERNAL_DEPENDENCY_ERROR", message, {
         details: {
+          connector_error_code: normalizeConnectorError(response.status, message),
           endpoint: input.path,
           method: input.method,
+          status_code: response.status,
           raw_response: rawResponse,
         },
       });

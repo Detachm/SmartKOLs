@@ -6,7 +6,11 @@ import type { PublishExecuteJob } from "../../contracts/jobs/publish-execute";
 import type { SourceFetchJob } from "../../contracts/jobs/source-fetch";
 import { SqliteAgentRuntimeRepository } from "../../modules/agent-runtime/infrastructure/sqlite-agent-runtime-repository";
 import { SqliteSchedulesRepository } from "../../modules/schedules/infrastructure/sqlite-schedules-repository";
+import { reconcileDuePublishSchedules } from "../../modules/schedules/application/reconcile-due-publish-schedules";
 import { SqliteSourcesRepository } from "../../modules/sources/infrastructure/sqlite-sources-repository";
+import { reconcileSourceFetchRuns } from "../../modules/sources/application/reconcile-source-fetch-runs";
+import { SqliteWorkspacesRepository } from "../../modules/workspaces/infrastructure/sqlite-workspaces-repository";
+import { reconcileWorkspaceTrendRefreshes } from "../../modules/trends/application/reconcile-workspace-trend-refreshes";
 import { SqliteWorkerJobsRepository } from "../../modules/execution/infrastructure/sqlite-worker-jobs-repository";
 import type { WorkerJobType } from "../../modules/execution/domain/worker-job";
 import { PROCESS_HEARTBEAT_INTERVAL_MS, PROCESS_STALE_AFTER_MS } from "../../modules/operations/domain/operations-policy";
@@ -18,6 +22,12 @@ import { SqliteRecurringBriefPlansRepository } from "../../modules/editorial/inf
 import { reconcileRecurringBriefPlanWorkerJobs } from "../../modules/editorial/application/reconcile-recurring-brief-plan-worker-jobs";
 import { SqliteAutopostPoliciesRepository } from "../../modules/autopost/infrastructure/sqlite-autopost-policies-repository";
 import { reconcileAutopostPolicyWorkerJobs } from "../../modules/autopost/application/reconcile-autopost-policy-worker-jobs";
+import { SqliteAccountOrchestrationStatesRepository } from "../../modules/orchestration/infrastructure/sqlite-account-orchestration-states-repository";
+import { reconcileAccountAutomationTickWorkerJobs } from "../../modules/orchestration/application/reconcile-account-automation-tick-worker-jobs";
+import { SqliteEngagementPoliciesRepository } from "../../modules/engagement/infrastructure/sqlite-engagement-policies-repository";
+import { reconcileEngagementInboxPullWorkerJobs } from "../../modules/engagement/application/reconcile-engagement-inbox-pull-worker-jobs";
+import { reconcileEngagementCandidatePoolWorkerJobs } from "../../modules/engagement/application/reconcile-engagement-candidate-pool-worker-jobs";
+import { SqliteAccountsRepository } from "../../modules/accounts/infrastructure/sqlite-accounts-repository";
 
 export type WorkerName = "all" | "agent-worker" | "publisher-worker" | "ingestion-worker" | "engagement-worker" | "editorial-worker";
 
@@ -59,9 +69,13 @@ export async function createWorkerRunner(config: WorkerRunnerConfig) {
   const runtime = new SqliteAgentRuntimeRepository(context.sqlite.db, context.requestContext);
   const schedules = new SqliteSchedulesRepository(context.sqlite.db);
   const sources = new SqliteSourcesRepository(context.sqlite.db);
+  const workspaces = new SqliteWorkspacesRepository(context.sqlite.db);
   const workerJobs = new SqliteWorkerJobsRepository(context.sqlite.db);
   const recurringBriefPlans = new SqliteRecurringBriefPlansRepository(context.sqlite.db);
   const autopostPolicies = new SqliteAutopostPoliciesRepository(context.sqlite.db);
+  const accountOrchestrationStates = new SqliteAccountOrchestrationStatesRepository(context.sqlite.db);
+  const engagementPolicies = new SqliteEngagementPoliciesRepository(context.sqlite.db);
+  const accounts = new SqliteAccountsRepository(context.sqlite.db);
   const runtimeProcesses = new SqliteRuntimeProcessesRepository(context.sqlite.db);
   const runtimeEvents = new SqliteRuntimeEventsRepository(context.sqlite.db);
   const logger = new StructuredLogger({
@@ -92,6 +106,7 @@ export async function createWorkerRunner(config: WorkerRunnerConfig) {
   let timer: NodeJS.Timeout | null = null;
   let tickInFlight = false;
   let nextDispatcherIndex = 0;
+  const lastTrendRefreshByWorkspaceId = new Map<string, string>();
 
   return {
     async start() {
@@ -116,6 +131,53 @@ export async function createWorkerRunner(config: WorkerRunnerConfig) {
           policies: autopostPolicies,
           workerJobs,
           clock: systemClock,
+        });
+        await reconcileAccountAutomationTickWorkerJobs({
+          states: accountOrchestrationStates,
+          queueAccountAutomationTick: context.commands.queueAccountAutomationTick,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "ingestion-worker") {
+        await reconcileSourceFetchRuns({
+          sources,
+          fetchSource: context.commands.fetchSource,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+        await reconcileWorkspaceTrendRefreshes({
+          workspaces,
+          refreshTrends: context.commands.refreshTrends,
+          lastRefreshByWorkspaceId: lastTrendRefreshByWorkspaceId,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "publisher-worker") {
+        await reconcileDuePublishSchedules({
+          schedules,
+          queuePublishJob: context.commands.queuePublishJob,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "engagement-worker") {
+        await reconcileEngagementInboxPullWorkerJobs({
+          policies: engagementPolicies,
+          workerJobs,
+          queuePullMentionsJob: context.commands.queuePullMentionsJob,
+          queuePullDirectMessagesJob: context.commands.queuePullDirectMessagesJob,
+          now: systemClock.now().toISOString(),
+          limit: config.max_jobs_per_tick,
+        });
+        await reconcileEngagementCandidatePoolWorkerJobs({
+          policies: engagementPolicies,
+          accounts,
+          workerJobs,
+          queueAccountAutomationTick: context.commands.queueAccountAutomationTick,
+          now: systemClock.now().toISOString(),
+          limit: config.max_jobs_per_tick,
         });
       }
       void drainOnce();
@@ -144,6 +206,55 @@ export async function createWorkerRunner(config: WorkerRunnerConfig) {
     tickInFlight = true;
     try {
       await recoverExpiredLeases();
+      if (config.worker_name === "all" || config.worker_name === "editorial-worker") {
+        await reconcileAccountAutomationTickWorkerJobs({
+          states: accountOrchestrationStates,
+          queueAccountAutomationTick: context.commands.queueAccountAutomationTick,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "ingestion-worker") {
+        await reconcileSourceFetchRuns({
+          sources,
+          fetchSource: context.commands.fetchSource,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+        await reconcileWorkspaceTrendRefreshes({
+          workspaces,
+          refreshTrends: context.commands.refreshTrends,
+          lastRefreshByWorkspaceId: lastTrendRefreshByWorkspaceId,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "publisher-worker") {
+        await reconcileDuePublishSchedules({
+          schedules,
+          queuePublishJob: context.commands.queuePublishJob,
+          clock: systemClock,
+          limit: config.max_jobs_per_tick,
+        });
+      }
+      if (config.worker_name === "all" || config.worker_name === "engagement-worker") {
+        await reconcileEngagementInboxPullWorkerJobs({
+          policies: engagementPolicies,
+          workerJobs,
+          queuePullMentionsJob: context.commands.queuePullMentionsJob,
+          queuePullDirectMessagesJob: context.commands.queuePullDirectMessagesJob,
+          now: systemClock.now().toISOString(),
+          limit: config.max_jobs_per_tick,
+        });
+        await reconcileEngagementCandidatePoolWorkerJobs({
+          policies: engagementPolicies,
+          accounts,
+          workerJobs,
+          queueAccountAutomationTick: context.commands.queueAccountAutomationTick,
+          now: systemClock.now().toISOString(),
+          limit: config.max_jobs_per_tick,
+        });
+      }
 
       let processed = 0;
       while (processed < config.max_jobs_per_tick) {

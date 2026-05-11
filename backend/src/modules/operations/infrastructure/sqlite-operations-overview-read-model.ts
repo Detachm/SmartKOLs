@@ -179,7 +179,15 @@ export class SqliteOperationsOverviewReadModel implements OperationsOverviewRead
 
     const activeHttpServers = processes.filter((item) => item.process_type === "http_server" && item.health_status === "running").length;
     const activeWorkers = processes.filter((item) => item.process_type === "worker" && item.health_status === "running").length;
-    const staleProcesses = processes.filter((item) => item.health_status === "stale").length;
+    const hasFreshHttpServer = processes.some((item) => item.process_type === "http_server" && item.health_status === "running");
+    const hasFreshWorker = processes.some((item) => item.process_type === "worker" && item.health_status === "running");
+    const staleProcesses = processes.filter((item) => {
+      if (item.health_status !== "stale") {
+        return false;
+      }
+
+      return item.process_type === "http_server" ? !hasFreshHttpServer : !hasFreshWorker;
+    }).length;
     const recentCriticalEvents = recentEvents.filter((item) => item.severity === "critical" && item.created_at >= recentCriticalCutoff).length;
     const managedSecretItems = secretInventory.reduce((sum, item) => sum + item.item_count, 0);
     const queuedJobs = queueMetrics.reduce((sum, item) => sum + item.queued_count, 0);

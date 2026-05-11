@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { requestBackend } from "@/lib/server/backend-api";
-import { withBackendSessionHeaders } from "@/lib/server/backend-session";
 import { clearLiveSessionCookie, readLiveSessionFromRequest, writeLiveSessionCookie } from "@/lib/server/live-session";
 import { isLocalAuthEnabled } from "@/lib/server/runtime-auth";
 
@@ -31,13 +29,16 @@ function sessionError(status: number, message: string) {
 }
 
 async function fetchBackendJson<T>(request: Request, path: string, init?: RequestInit): Promise<T> {
-  const session = readLiveSessionFromRequest(request);
-  const response = await requestBackend(path, {
+  const internalAppBaseUrl = getInternalAppBaseUrl(request);
+  const url = new URL(`/api/backend${path}`, internalAppBaseUrl);
+  const cookieHeader = request.headers.get("cookie");
+  const response = await fetch(url, {
     cache: "no-store",
-    headers: withBackendSessionHeaders({
+    headers: {
       "content-type": "application/json; charset=utf-8",
+      ...(cookieHeader ? { cookie: cookieHeader } : {}),
       ...(init?.headers ?? {}),
-    }, session),
+    },
     ...init,
   });
 
@@ -52,6 +53,25 @@ async function fetchBackendJson<T>(request: Request, path: string, init?: Reques
   }
 
   return payload.data;
+}
+
+function getInternalAppBaseUrl(request: Request): string {
+  const configured = process.env.INTERNAL_APP_BASE_URL?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  try {
+    const parsed = new URL(request.url);
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+    const host = forwardedHost || request.headers.get("host")?.trim() || parsed.host;
+    const protocol = forwardedProto || parsed.protocol.replace(/:$/, "");
+    return `${protocol}://${host}`;
+  } catch {
+    const port = process.env.PORT?.trim() || "3000";
+    return `http://127.0.0.1:${port}`;
+  }
 }
 
 export async function GET(request: Request) {

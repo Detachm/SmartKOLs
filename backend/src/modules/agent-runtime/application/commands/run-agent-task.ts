@@ -16,6 +16,8 @@ import {
   type ContentBriefSourceScope,
 } from "../../../content-briefs/domain/content-brief-source-scope";
 import type { DraftVersionRepository } from "../../../drafts/application/ports/draft-version-repository";
+import type { FailAutopostRun } from "../../../autopost/application/commands/fail-autopost-run";
+import type { AutopostRunsRepository } from "../../../autopost/application/ports/autopost-runs-repository";
 import {
   assertSourceBackedOriginalityGuardPassed,
   evaluateSourceBackedOriginalityGuard,
@@ -34,6 +36,8 @@ import type { AccountSourceDocumentsReadModel } from "../../../sources/applicati
 import type { AlertsRepository } from "../../../monitoring/application/ports/alerts-repository";
 import { createAlert } from "../../../monitoring/domain/alert";
 import type { QueueAccountAutomationTick } from "../../../orchestration/application/commands/queue-account-automation-tick";
+import type { QueueSendReplyProposalJob } from "../../../execution/application/commands/queue-send-reply-proposal-job";
+import type { EngagementPoliciesRepository } from "../../../engagement/application/ports/engagement-policies-repository";
 import type { AgentRuntimeRepository } from "../ports/agent-runtime-repository";
 import type { ModelGateway } from "../ports/model-gateway";
 import { createAgentRun, failAgentRun, succeedAgentRun } from "../../domain/agent-run";
@@ -58,7 +62,11 @@ export interface RunAgentTaskDependencies {
   artifactStore: ArtifactStore;
   auditLogs: AuditLogRepository;
   alerts: AlertsRepository;
+  autopostRuns: AutopostRunsRepository;
+  failAutopostRun: FailAutopostRun;
   queueAccountAutomationTick: QueueAccountAutomationTick;
+  queueSendReplyProposalJob: QueueSendReplyProposalJob;
+  engagementPolicies: EngagementPoliciesRepository;
   modelGateway: ModelGateway;
   clock: Clock;
 }
@@ -150,6 +158,7 @@ export class RunAgentTask {
         ? error
         : new AppError("EXTERNAL_DEPENDENCY_ERROR", "agent task execution failed", { cause: error });
       const invalidOutput = isInvalidModelOutputError(appError);
+      const cleanupErrors: string[] = [];
 
       await this.deps.runtime.createModelRequestAttempt(createModelRequestAttempt({
         id: newId(),
@@ -173,6 +182,11 @@ export class RunAgentTask {
         status: invalidOutput ? "invalid_output" : "failed",
         finished_at: this.deps.clock.now().toISOString(),
       });
+      try {
+        await this.failLinkedAutopostRunIfNeeded(task.id, appError.code, appError.message);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError instanceof Error ? cleanupError.message : "linked autopost cleanup failed");
+      }
       await this.deps.alerts.create(createAlert({
         id: newId(),
         workspace_id: task.workspace_id,
@@ -184,6 +198,17 @@ export class RunAgentTask {
         payload: JSON.stringify({ task_id: task.id, error_code: appError.code }),
         created_at: this.deps.clock.now().toISOString(),
       }));
+      if (cleanupErrors.length > 0) {
+        throw new AppError("INTERNAL_ERROR", "agent task failed and cleanup was incomplete", {
+          details: {
+            task_id: task.id,
+            original_error_code: appError.code,
+            original_error_message: appError.message,
+            cleanup_errors: cleanupErrors,
+          },
+          cause: appError,
+        });
+      }
       throw appError;
     }
   }
@@ -220,6 +245,15 @@ export class RunAgentTask {
         create_if_missing: false,
       });
     }
+  }
+
+  private async failLinkedAutopostRunIfNeeded(taskId: string, errorCode: string, errorMessage: string) {
+    const autopostRun = await this.deps.autopostRuns.findActiveByTaskId(taskId);
+    if (!autopostRun) {
+      return;
+    }
+
+    await this.deps.failAutopostRun.execute(autopostRun.id, errorCode, errorMessage);
   }
 
   private async executeTask(
@@ -328,10 +362,15 @@ export class RunAgentTask {
         })),
       });
 
+      const payload = JSON.parse(input.task.payload) as {
+        preferred_style?: string;
+      };
+
       const result = await this.deps.modelGateway.proposeReply({
         thread_id: thread.id,
         channel: thread.channel,
         counterpart_handle: thread.counterpart_handle,
+        preferred_style: typeof payload.preferred_style === "string" ? payload.preferred_style : undefined,
         messages: messages.map((message) => ({
           sender_handle: message.sender_handle,
           content: message.content,
@@ -366,6 +405,10 @@ export class RunAgentTask {
         after_state: JSON.stringify(proposal),
         created_at: this.deps.clock.now().toISOString(),
       });
+      const policy = await this.deps.engagementPolicies.findByAccountId(thread.account_id);
+      if (policy && policy.status === "active" && !policy.policy_body.require_manual_approval) {
+        await this.deps.queueSendReplyProposalJob.execute(proposal.id);
+      }
 
       return {
         provider_request_id: result.provider_request_id,
@@ -518,6 +561,7 @@ export class RunAgentTask {
         topic?: string;
         trend_id?: string;
         content_brief_id?: string;
+        preview_mode?: boolean;
       };
       const account = await this.deps.accounts.findById(input.task.target_id);
       if (!account) {
@@ -538,34 +582,31 @@ export class RunAgentTask {
       }, persona);
 
       const briefId = typeof payload.content_brief_id === "string" ? payload.content_brief_id.trim() : "";
-      const brief = briefId ? await this.loadContentBriefContext(artifact, input.run_id, briefId) : undefined;
-      const topic = brief?.brief.topic ?? (typeof payload.topic === "string" ? payload.topic.trim() : "");
-      if (!topic) {
-        throw new AppError("VALIDATION_ERROR", "writer task topic is required when content_brief_id is not provided", {
+      if (!briefId) {
+        throw new AppError("VALIDATION_ERROR", "writer task content_brief_id is required", {
           details: { task_id: input.task.id },
         });
       }
+      const brief = await this.loadContentBriefContext(artifact, input.run_id, briefId);
+      const topic = brief.brief.topic;
 
-      const recentDocuments = brief
-        ? []
-        : await this.loadRecentDocuments(artifact, input.run_id, account.workspace_id);
       const result = await this.deps.modelGateway.generateDraft({
         account_id: account.id,
-        generation_mode: brief ? "source_backed" : "manual_topic",
+        generation_mode: "source_backed",
         topic,
         trend: typeof payload.trend_id === "string"
           ? await this.loadTrendContext(artifact, input.run_id, payload.trend_id)
           : undefined,
-        recent_documents: recentDocuments,
-        evidence_documents: brief?.evidence_documents,
-        content_brief: brief ? {
+        recent_documents: [],
+        evidence_documents: brief.evidence_documents,
+        content_brief: {
           brief_id: brief.brief.id,
           generation_mode: brief.brief.generation_mode,
           topic: brief.brief.topic,
           angle: brief.brief.angle,
           audience: brief.brief.audience,
           outline: brief.brief.outline,
-        } : undefined,
+        },
         persona: {
           writing_style: persona.writing_style,
           bio: persona.bio,
@@ -573,8 +614,9 @@ export class RunAgentTask {
           personality_traits: persona.personality_traits,
           distillation_sample_tweets: persona.distillation_sample_tweets,
         },
-      }, { agent_version: artifact.definition.version });
-      const originalityGuard = brief
+        }, { agent_version: artifact.definition.version });
+      const previewMode = payload.preview_mode === true;
+      const originalityGuard = !previewMode
         ? await this.runSourceBackedOriginalityGuard(artifact, input.run_id, {
           account_id: account.id,
           brief_id: brief.brief.id,
@@ -591,13 +633,16 @@ export class RunAgentTask {
         version_no: 1,
         content: result.content,
         metadata: JSON.stringify({
-          generation_mode: brief ? "source_backed" : "manual_topic",
+          generation_mode: "source_backed",
           rationale: result.rationale,
           provider_request_id: result.provider_request_id,
+          agent_run_id: input.run_id,
           trend_id: payload.trend_id,
-          content_brief_id: brief?.brief.id,
-          evidence_document_ids: brief?.evidence_documents.map((document) => document.source_document_id),
-          citation_urls: brief?.evidence_documents.map((document) => document.canonical_url),
+          content_brief_id: brief.brief.id,
+          preview_mode: previewMode || undefined,
+          evidence_document_ids: brief.evidence_documents.map((document) => document.source_document_id),
+          source_document_ids: brief.evidence_documents.map((document) => document.source_document_id),
+          citation_urls: brief.evidence_documents.map((document) => document.canonical_url),
           originality_guard: originalityGuard,
         }),
         created_by_type: "agent",
@@ -845,23 +890,6 @@ export class RunAgentTask {
     };
   }
 
-  private async loadRecentDocuments(artifact: AgentArtifactBundle, runId: string, workspaceId: string) {
-    const documents = await this.deps.sources.listRecentDocumentsByWorkspaceId(workspaceId, 5);
-    const recentDocuments = documents.map((document) => ({
-      title: document.title,
-      summary: document.summary,
-      canonical_url: document.canonical_url,
-      published_at: document.published_at,
-    }));
-
-    await this.recordToolCall(artifact, runId, "sources.list_recent_documents", {
-      workspace_id: workspaceId,
-      limit: 5,
-    }, recentDocuments);
-
-    return recentDocuments;
-  }
-
   private async loadContentBriefContext(artifact: AgentArtifactBundle, runId: string, briefId: string) {
     const brief = await this.deps.contentBriefs.findBriefById(briefId);
     if (!brief) {
@@ -905,6 +933,15 @@ export class RunAgentTask {
       canonical_url: entry.document.canonical_url,
       published_at: entry.document.published_at,
     }));
+
+    if (evidenceDocuments.length === 0) {
+      throw new AppError("VALIDATION_ERROR", "content brief evidence documents could not be resolved for draft generation", {
+        details: {
+          brief_id: brief.id,
+          evidence_item_count: evidenceItems.length,
+        },
+      });
+    }
 
     await this.recordToolCall(artifact, runId, "content_briefs.get_evidence", {
       brief_id: brief.id,

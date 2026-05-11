@@ -34,6 +34,32 @@ export interface TwitterReplyResult {
   rate_limit?: TwitterRateLimitSnapshot;
 }
 
+export interface TwitterCommentResult {
+  external_comment_id: string;
+  external_comment_url?: string;
+  raw_response: string;
+  platform_status_code: string;
+  rate_limit?: TwitterRateLimitSnapshot;
+}
+
+export interface TwitterFollowResult {
+  target_user_id: string;
+  target_handle?: string;
+  following: boolean;
+  pending_follow?: boolean;
+  raw_response: string;
+  platform_status_code: string;
+  rate_limit?: TwitterRateLimitSnapshot;
+}
+
+export interface TwitterRepostResult {
+  reposted: boolean;
+  target_post_id: string;
+  raw_response: string;
+  platform_status_code: string;
+  rate_limit?: TwitterRateLimitSnapshot;
+}
+
 export interface TwitterDirectMessageResult {
   external_message_id: string;
   external_thread_id: string;
@@ -62,12 +88,28 @@ export interface TwitterTimelinePost {
   external_post_id: string;
   handle: string;
   kind: "post" | "reply";
+  conversation_id?: string;
   content: string;
   occurred_at: string;
+  like_count?: number;
   raw_payload: string;
 }
 
 export interface TwitterTimelinePullResult {
+  posts: TwitterTimelinePost[];
+  raw_response: string;
+  platform_status_code: string;
+  rate_limit?: TwitterRateLimitSnapshot;
+}
+
+export interface TwitterPostLookupResult {
+  posts: TwitterTimelinePost[];
+  raw_response: string;
+  platform_status_code: string;
+  rate_limit?: TwitterRateLimitSnapshot;
+}
+
+export interface TwitterSearchPostsResult {
   posts: TwitterTimelinePost[];
   raw_response: string;
   platform_status_code: string;
@@ -89,6 +131,28 @@ export interface TwitterClient {
     reply_to_external_post_id: string;
     text: string;
   }): Promise<TwitterReplyResult>;
+
+  commentOnPost(input: {
+    account_id: string;
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    comment_on_external_post_id: string;
+    text: string;
+  }): Promise<TwitterCommentResult>;
+
+  followUser(input: {
+    account_id: string;
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    target_handle: string;
+  }): Promise<TwitterFollowResult>;
+
+  repostPost(input: {
+    account_id: string;
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    target_post_id: string;
+  }): Promise<TwitterRepostResult>;
 
   sendDirectMessage(input: {
     account_id: string;
@@ -122,4 +186,19 @@ export interface TwitterClient {
     secret_ref: string;
     handle: string;
   }): Promise<TwitterTimelinePullResult>;
+
+  lookupPosts(input: {
+    account_id: string;
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    post_ids: string[];
+  }): Promise<TwitterPostLookupResult>;
+
+  searchRecentPosts(input: {
+    account_id: string;
+    provider: "x_oauth1" | "x_oauth2" | "api_key";
+    secret_ref: string;
+    query: string;
+    max_results?: number;
+  }): Promise<TwitterSearchPostsResult>;
 }

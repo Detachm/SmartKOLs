@@ -7,8 +7,17 @@ import type { AgentTask } from "../../modules/agent-runtime/domain/agent-task";
 import type { AgentRun } from "../../modules/agent-runtime/domain/agent-run";
 import type { AlertChannel } from "../../modules/alert-channels/domain/alert-channel";
 import type { OperationsOverviewResponse } from "./operations";
+import type { OperatorErrorCategory } from "../../modules/monitoring/domain/operator-error-classification";
 
-export type MonitoringOperatorQueueKind = "agent_task" | "worker_job" | "publish_job" | "source_fetch_run";
+export type MonitoringOperatorQueueKind =
+  | "account_readiness"
+  | "draft_review"
+  | "reply_review"
+  | "runtime_health"
+  | "agent_task"
+  | "worker_job"
+  | "publish_job"
+  | "source_fetch_run";
 
 export interface MonitoringFeedResponse {
   items: MonitoringFeedItem[];
@@ -59,9 +68,16 @@ export interface MonitoringOperatorQueueItem {
   status: "queued" | "running" | "failed" | "cancelled";
   title: string;
   subtitle: string;
+  blocking_chain: string;
+  recommended_action: string;
+  target_url: string;
   account_id?: string;
   error_code?: string;
   error_message?: string;
+  error_category?: OperatorErrorCategory;
+  error_user_message?: string;
+  retry_advice?: string;
+  auto_retry_recommended?: boolean;
   created_at: string;
   run_after?: string;
   started_at?: string;
@@ -87,15 +103,17 @@ export interface RetryMonitoringQueueBacklogRequest {
   workspace_id: string;
   kinds?: MonitoringOperatorQueueKind[];
   limit?: number;
+  retry_mode?: "safe" | "all";
 }
 
 export interface RetryMonitoringQueueBacklogAttempt {
   kind: MonitoringOperatorQueueKind;
   source_id: string;
   retried_id?: string;
-  status: "retried" | "failed";
+  status: "retried" | "failed" | "skipped";
   error_code?: string;
   error_message?: string;
+  skip_reason?: string;
 }
 
 export interface RetryMonitoringQueueBacklogKindResult {
@@ -103,6 +121,7 @@ export interface RetryMonitoringQueueBacklogKindResult {
   matched_failed_count: number;
   retried_count: number;
   failed_count: number;
+  skipped_count: number;
 }
 
 export interface RetryMonitoringQueueBacklogResponse {
@@ -113,6 +132,7 @@ export interface RetryMonitoringQueueBacklogResponse {
     matched_failed_items: number;
     retried_items: number;
     failed_items: number;
+    skipped_items: number;
   };
   kinds: RetryMonitoringQueueBacklogKindResult[];
   attempts: RetryMonitoringQueueBacklogAttempt[];

@@ -16,12 +16,31 @@ export interface UpsertAutopostPolicyRequest {
   execution_body: {
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts?: number;
   };
   status: "active" | "paused";
 }
 
 export interface AutopostPolicyResponse {
   policy: AutopostPolicy;
+  freshness?: {
+    health_status: "healthy" | "degraded" | "blocked";
+    refresh_grace_minutes: number;
+    refresh_cutoff: string;
+    relevant_source_count: number;
+    fresh_source_count: number;
+    stale_source_count: number;
+    source_types: Array<"rss" | "website" | "twitter" | "youtube" | "substack" | "telegram">;
+    latest_document_published_at?: string;
+    sources: Array<{
+      source_id: string;
+      source_name: string;
+      source_type: "rss" | "website" | "twitter" | "youtube" | "substack" | "telegram";
+      source_status: "active" | "paused" | "error";
+      last_fetched_at?: string;
+      freshness_status: "fresh" | "stale";
+    }>;
+  };
 }
 
 export interface AutopostRunListResponse {

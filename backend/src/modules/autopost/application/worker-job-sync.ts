@@ -15,6 +15,8 @@ export async function syncAutopostPolicyWorkerJob(
     return;
   }
 
+  const runAfter = resolveAutopostPreparationRunAfter(policy.next_run_after, clock.now().toISOString());
+
   try {
     await workerJobs.create(createWorkerJob({
       id: newId(),
@@ -26,7 +28,7 @@ export async function syncAutopostPolicyWorkerJob(
         policy_id: policy.id,
         account_id: policy.account_id,
       }),
-      run_after: policy.next_run_after,
+      run_after: runAfter,
       created_at: clock.now().toISOString(),
     }));
   } catch (error) {
@@ -36,6 +38,16 @@ export async function syncAutopostPolicyWorkerJob(
 
     throw error;
   }
+}
+
+function resolveAutopostPreparationRunAfter(nextRunAfter: string, now: string) {
+  const target = Date.parse(nextRunAfter) - 30 * 60_000;
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(target) || !Number.isFinite(nowMs)) {
+    return nextRunAfter;
+  }
+
+  return new Date(Math.max(target, nowMs)).toISOString();
 }
 
 function isQueuedAutopostJobDuplicate(error: unknown) {

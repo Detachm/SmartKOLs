@@ -1,6 +1,5 @@
 {$APP_DOMAIN} {
-  encode gzip
-  reverse_proxy frontend:3000
+  redir https://smartkol.vercel.app{uri} permanent
 }
 
 {$BACKEND_DOMAIN} {

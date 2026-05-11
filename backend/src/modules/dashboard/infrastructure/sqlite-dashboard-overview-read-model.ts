@@ -7,6 +7,7 @@ import type { Notification } from "../../../modules/notifications/domain/notific
 import type { Trend } from "../../../modules/trends/domain/trend";
 import type { SqliteStatementExecutor } from "../../../infrastructure/db/sqlite-executor";
 import type { DashboardOverviewReadModel } from "../application/queries/get-dashboard-overview";
+import { SqliteTrendsRepository } from "../../../modules/trends/infrastructure/sqlite-trends-repository";
 
 interface SummaryRow {
   total_accounts: number;
@@ -81,14 +82,7 @@ export class SqliteDashboardOverviewReadModel implements DashboardOverviewReadMo
       [workspaceId],
     ).map(mapPendingDraftPreview);
 
-    const trends = this.db.all<Trend>(
-      `SELECT id, workspace_id, topic, category, score, status, detected_at, updated_at
-      FROM trends
-      WHERE workspace_id = ?
-      ORDER BY score DESC, updated_at DESC
-      LIMIT 10`,
-      [workspaceId],
-    );
+    const trends = (await new SqliteTrendsRepository(this.db).listByWorkspaceId(workspaceId)).slice(0, 10);
 
     const notifications = this.db.all<Notification>(
       `SELECT id, workspace_id, type, title, body, link, read_at, created_at

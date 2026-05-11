@@ -2,14 +2,15 @@ import { AppError } from "../../../../core/errors/app-error";
 import type { Clock } from "../../../../core/time/clock";
 import type { PullDirectMessages } from "../../../connector-x/application/commands/pull-direct-messages";
 import type { PullMentions } from "../../../connector-x/application/commands/pull-mentions";
+import type { ExecuteAutopostPolicy } from "../../../autopost/application/commands/execute-autopost-policy";
 import type { QueueAccountAutomationTick } from "../../../orchestration/application/commands/queue-account-automation-tick";
 import type { FailRecurringBriefPlanExecution } from "../../../editorial/application/commands/fail-recurring-brief-plan-execution";
 import type { RecurringBriefPlansRepository } from "../../../editorial/application/ports/recurring-brief-plans-repository";
 import type { SendReplyProposal } from "../../../engagement/application/commands/send-reply-proposal";
 import type { TickAccountAutomation } from "../../../orchestration/application/commands/tick-account-automation";
+import { classifyOperatorError } from "../../../monitoring/domain/operator-error-classification";
 import type { WorkerJobsRepository } from "../ports/worker-jobs-repository";
-import type { AutopostPoliciesRepository } from "../../../autopost/application/ports/autopost-policies-repository";
-import { startWorkerJob, succeedWorkerJob, type WorkerJob } from "../../domain/worker-job";
+import { retryWorkerJob, startWorkerJob, succeedWorkerJob, type WorkerJob } from "../../domain/worker-job";
 import type { FailWorkerJob } from "./fail-worker-job";
 
 export interface RunWorkerJobDependencies {
@@ -17,7 +18,7 @@ export interface RunWorkerJobDependencies {
   pullMentions: PullMentions;
   pullDirectMessages: PullDirectMessages;
   sendReplyProposal: SendReplyProposal;
-  autopostPolicies: AutopostPoliciesRepository;
+  executeAutopostPolicy: ExecuteAutopostPolicy;
   recurringBriefPlans: RecurringBriefPlansRepository;
   queueAccountAutomationTick: QueueAccountAutomationTick;
   tickAccountAutomation: TickAccountAutomation;
@@ -53,6 +54,11 @@ export class RunWorkerJob {
         ? error
         : new AppError("EXTERNAL_DEPENDENCY_ERROR", "worker job execution failed", { cause: error });
       const cleanupErrors: string[] = [];
+      const delayedRetry = buildDelayedWorkerJobRetry(runningJob, appError, this.deps.clock.now().toISOString());
+      if (delayedRetry) {
+        await this.deps.workerJobs.save(delayedRetry);
+        return delayedRetry;
+      }
       if (job.job_type === "editorial.recurring_brief.execute") {
         try {
           await this.deps.failRecurringBriefPlanExecution.execute(job.target_id, appError.code, appError.message);
@@ -124,11 +130,9 @@ export class RunWorkerJob {
 
     if (job.job_type === "autopost.execute") {
       const policyId = requirePayloadString(payload.policy_id, "policy_id", job.id);
-      const accountId = await resolveAutopostPolicyAccountId(this.deps.autopostPolicies, policyId, payload, job.id);
-      await this.deps.queueAccountAutomationTick.execute({
-        account_id: accountId,
-        trigger_kind: "system",
-        create_if_missing: true,
+      await this.deps.executeAutopostPolicy.execute({
+        policy_id: policyId,
+        trigger: "scheduled",
       });
       return;
     }
@@ -145,6 +149,55 @@ export class RunWorkerJob {
     throw new AppError("INVALID_STATE", "unsupported worker job type", {
       details: { worker_job_id: job.id, job_type: job.job_type },
     });
+  }
+}
+
+const MAX_AUTOMATIC_WORKER_JOB_RETRIES = 2;
+
+function buildDelayedWorkerJobRetry(job: WorkerJob, error: AppError, now: string): WorkerJob | undefined {
+  const classification = classifyOperatorError({
+    status: "failed",
+    error_code: error.code,
+    error_message: error.message,
+  });
+  if (!classification?.auto_retry_recommended || !["temporary_external_error", "rate_limited"].includes(classification.category)) {
+    return undefined;
+  }
+
+  const payload = parseRetryPayload(job.payload);
+  const attempt = typeof payload.__auto_retry_attempt === "number" ? payload.__auto_retry_attempt : 0;
+  if (attempt >= MAX_AUTOMATIC_WORKER_JOB_RETRIES) {
+    return undefined;
+  }
+
+  const retryDelayMinutes = classification.category === "rate_limited" ? 30 : 15;
+  const failedJob: WorkerJob = {
+    ...job,
+    status: "failed",
+    error_code: error.code,
+    error_message: error.message,
+    lease_expires_at: undefined,
+    finished_at: now,
+  };
+  return {
+    ...retryWorkerJob(failedJob, addMinutes(now, retryDelayMinutes)),
+    payload: JSON.stringify({
+      ...payload,
+      __auto_retry_attempt: attempt + 1,
+      __last_auto_retry_error_code: error.code,
+      __last_auto_retry_at: now,
+    }),
+  };
+}
+
+function parseRetryPayload(payload: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
   }
 }
 
@@ -198,26 +251,6 @@ async function resolveRecurringPlanAccountId(
   }
 
   return plan.account_id;
-}
-
-async function resolveAutopostPolicyAccountId(
-  policies: AutopostPoliciesRepository,
-  policyId: string,
-  payload: Record<string, unknown>,
-  jobId: string,
-): Promise<string> {
-  if (typeof payload.account_id === "string" && payload.account_id.trim() !== "") {
-    return payload.account_id.trim();
-  }
-
-  const policy = await policies.findById(policyId);
-  if (!policy) {
-    throw new AppError("NOT_FOUND", "autopost policy not found", {
-      details: { worker_job_id: jobId, policy_id: policyId },
-    });
-  }
-
-  return policy.account_id;
 }
 
 function addMinutes(isoTimestamp: string, minutes: number): string {

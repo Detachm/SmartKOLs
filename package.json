@@ -12,6 +12,9 @@
     "test:backend": "bash -lc 'tsx --test $(find backend/src -name \"*.test.ts\" -print)'",
     "build": "next build",
     "doctor": "node scripts/doctor-smartkols.mjs",
+    "smoke:current": "bash scripts/smoke-current-chain.sh",
+    "smoke:routes": "node scripts/smoke-route-capability.mjs",
+    "smoke:e2e": "node scripts/smoke-automation-e2e.mjs",
     "start": "next start",
     "lint": "next lint"
   },

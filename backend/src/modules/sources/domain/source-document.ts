@@ -26,8 +26,22 @@ export function createSourceDocument(document: SourceDocument): SourceDocument {
     summary: document.summary.trim(),
     body_text: requireNonEmptyString(document.body_text, "body_text"),
     language: requireNonEmptyString(document.language, "language"),
-    published_at: document.published_at?.trim() || undefined,
+    published_at: normalizePublishedAt(document.published_at),
     content_hash: requireNonEmptyString(document.content_hash, "content_hash"),
     created_at: requireNonEmptyString(document.created_at, "created_at"),
   };
+}
+
+function normalizePublishedAt(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  if (!Number.isFinite(timestamp)) {
+    return trimmed;
+  }
+
+  return new Date(timestamp).toISOString();
 }

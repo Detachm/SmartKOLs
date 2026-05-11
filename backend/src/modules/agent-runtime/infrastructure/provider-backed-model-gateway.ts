@@ -12,6 +12,9 @@ import type {
 import type { ModelProvider, ModelProviderDescriptor } from "../application/ports/model-provider";
 import { normalizeModelProviderError } from "./model-error-normalizer";
 import { getAgentArtifactBundle, type AgentCode } from "./static-agent-artifacts";
+import { buildDeterministicContentBrief } from "../../content-briefs/application/deterministic-content-brief";
+import { truncateXPostToLimit } from "../../connector-x/domain/x-post-length";
+import { assertDraftVoiceGuardPassed } from "../../drafts/domain/draft-voice-guard";
 
 const MODEL_INVOKE_MAX_ATTEMPTS = 4;
 const MODEL_TRANSIENT_RETRY_DELAY_MS = 750;
@@ -46,6 +49,7 @@ export class ProviderBackedModelGateway implements ModelGateway {
     thread_id: string;
     channel: "mention" | "reply" | "dm" | "comment";
     counterpart_handle?: string;
+    preferred_style?: string;
     messages: Array<{ sender_handle?: string; content: string; created_at: string }>;
   }, options: { agent_version: string }): Promise<ReplyProposalResult> {
     const output = await this.invokeAgent("reply-proposer", options.agent_version, input);
@@ -59,7 +63,7 @@ export class ProviderBackedModelGateway implements ModelGateway {
 
   async generateDraft(input: {
     account_id: string;
-    generation_mode: "manual_topic" | "source_backed";
+    generation_mode: "source_backed";
     topic: string;
     trend?: {
       topic: string;
@@ -96,10 +100,20 @@ export class ProviderBackedModelGateway implements ModelGateway {
     };
   }, options: { agent_version: string }): Promise<DraftGenerationResult> {
     const output = await this.invokeAgent("writer", options.agent_version, input);
+    const content = requireString(output.content, "content");
+    const rationale = requireString(output.rationale, "rationale");
+    const truncated = truncateXPostToLimit(content);
+    const voiceGuard = assertDraftVoiceGuardPassed({
+      content: truncated.text,
+      topic: requireString(output.topic, "topic"),
+    });
+
     return {
       topic: requireString(output.topic, "topic"),
-      content: requireString(output.content, "content"),
-      rationale: requireString(output.rationale, "rationale"),
+      content: truncated.text,
+      rationale: truncated.truncated
+        ? `${rationale}\n\nSystem note: draft was shortened to fit the X post limit (${truncated.original_diagnostics.weighted_length} -> ${truncated.diagnostics.weighted_length}). Voice guard: ${voiceGuard.status}.`
+        : rationale,
       raw_response: output.raw_response,
       provider_request_id: optionalString(output.provider_request_id),
     };
@@ -358,120 +372,22 @@ function shouldFallbackContentBrief(error: AppError): boolean {
 }
 
 function buildDeterministicContentBriefFallback(input: Parameters<ModelGateway["generateContentBrief"]>[0], error: AppError): ContentBriefGenerationResult {
-  const evidenceDocuments = input.documents.slice(0, Math.min(input.documents.length, 3));
-  const primary = evidenceDocuments[0];
-  const topic = firstNonEmpty(
-    input.topic_hint,
-    input.trend?.topic,
-    primary?.title,
-    "Current source-backed topic",
-  );
-  const audience = firstNonEmpty(
-    input.audience,
-    deriveFallbackAudience(input.persona.interests),
-    "Operators following this account",
-  );
-  const angle = firstNonEmpty(
-    input.angle_hint,
-    buildFallbackAngle(topic, primary?.summary),
-    `Ground the post in concrete source evidence about ${topic}.`,
-  );
-  const outline = buildFallbackOutline(topic, angle, evidenceDocuments);
+  const deterministic = buildDeterministicContentBrief(input);
   const rationale = `Deterministic fallback brief generated because model output was unavailable: ${error.message}`;
 
   return {
-    topic,
-    angle,
-    audience,
-    outline,
+    topic: deterministic.topic,
+    angle: deterministic.angle,
+    audience: deterministic.audience,
+    outline: deterministic.outline,
     rationale,
-    evidence_items: evidenceDocuments.map((document, index) => ({
-      source_document_id: document.source_document_id,
-      usage_reason: index === 0
-        ? `Use as the primary anchor for ${topic}.`
-        : `Use as supporting evidence to reinforce the core angle.`,
-      key_claims: extractFallbackClaims(document),
-      quoted_excerpt: extractQuotedExcerpt(document.summary),
-    })),
+    evidence_items: deterministic.evidence_items,
     raw_response: JSON.stringify({
       fallback: true,
       reason: error.message,
       code: error.code,
     }),
   };
-}
-
-function deriveFallbackAudience(interests: string[]): string {
-  const selected = interests.map((item) => item.trim()).filter(Boolean).slice(0, 2);
-  if (selected.length === 0) {
-    return "Operators and builders following this account";
-  }
-
-  return `${selected.join(" / ")} builders and practitioners`;
-}
-
-function buildFallbackAngle(topic: string, summary?: string): string {
-  const claim = extractSentences(summary).find((sentence) => sentence.length >= 24);
-  if (claim) {
-    return `${topic}: turn the strongest source-backed claim into one practical operator takeaway.`;
-  }
-
-  return `${topic}: extract one concrete takeaway that this account can explain with conviction.`;
-}
-
-function buildFallbackOutline(
-  topic: string,
-  angle: string,
-  documents: Array<{
-    source_document_id: string;
-    title: string;
-    summary: string;
-    canonical_url: string;
-    published_at?: string;
-  }>,
-): string {
-  const bullets = [
-    `Hook: state why ${topic} matters now in one sentence.`,
-    `Point: explain the angle "${angle}" with 1-2 concrete details from the evidence.`,
-  ];
-  const supportingTitle = documents[1]?.title ?? documents[0]?.title;
-  if (supportingTitle) {
-    bullets.push(`Support: reference ${supportingTitle} as proof or contrast.`);
-  }
-  bullets.push("Close: end with one practical implication or operator takeaway.");
-  return bullets.join("\n");
-}
-
-function extractFallbackClaims(document: {
-  title: string;
-  summary: string;
-}): string[] {
-  const claims = [
-    document.title.trim(),
-    ...extractSentences(document.summary),
-  ].filter(Boolean);
-
-  return claims.slice(0, 3);
-}
-
-function extractQuotedExcerpt(summary: string): string | undefined {
-  const excerpt = extractSentences(summary)[0];
-  if (!excerpt) {
-    return undefined;
-  }
-
-  return excerpt.slice(0, 220);
-}
-
-function extractSentences(value?: string): string[] {
-  if (!value) {
-    return [];
-  }
-
-  return value
-    .split(/[\n。！？!?]+/g)
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter((item) => item.length >= 12);
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string {

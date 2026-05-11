@@ -1,13 +1,28 @@
 export type UpsertAccountCredentialRequest =
   | {
       provider: "x_oauth1";
-      secret_ref: string;
       status: "valid" | "invalid" | "expired" | "revoked";
+      secret_ref: string;
+    }
+  | {
+      provider: "x_oauth1";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      oauth1_token: {
+        access_token: string;
+        access_token_secret: string;
+      };
     }
   | {
       provider: "api_key";
-      secret_ref: string;
       status: "valid" | "invalid" | "expired" | "revoked";
+      secret_ref: string;
+    }
+  | {
+      provider: "api_key";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      api_key_token: {
+        bearer_token: string;
+      };
     }
   | {
       provider: "x_oauth2";

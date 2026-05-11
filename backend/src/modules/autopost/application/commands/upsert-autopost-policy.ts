@@ -38,6 +38,7 @@ export class UpsertAutopostPolicy {
     execution_body: {
       draft_review_mode: "manual" | "auto_approve";
       auto_queue_publish: boolean;
+      max_pending_manual_review_drafts?: number;
     };
     status: "active" | "paused";
   }) {

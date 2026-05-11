@@ -156,24 +156,8 @@
 - `WORKER_POLL_INTERVAL_MS`
 - `WORKER_MAX_JOBS_PER_TICK`
 
-## 当前最重要的事
-
-现在的推进顺序应该非常明确：
-
-1. 先补执行闭环剩余缺口
-   - 已完成
-2. 先补 operator control surface
-3. 最后补 production ops
-
-不应该再回去做“骨架建设”。
-
 ## 当前文档
 
-- [架构设计](./docs/ARCHITECTURE.md)
-- [运行与部署事实](./docs/OPERATIONS.md)
-- [数据库设计](./docs/DATABASE.md)
-- [Twitter/X Connector 设计](./docs/TWITTER_CONNECTOR.md)
-- [LLM Agent Runtime 设计](./docs/AGENT_RUNTIME.md)
-- [后端代码骨架与接口边界](./docs/BACKEND_LAYOUT.md)
-- [Roadmap](./docs/ROADMAP.md)
-- [Todo List](./docs/TODO.md)
+- [运行排障 Runbook](./docs/RUNBOOK.md)
+- [本地运行说明](../docs/local-run.md)
+- [AWS 部署说明](../docs/aws-deployment.md)

@@ -19,6 +19,7 @@ import { importAccountsHandler } from "./handlers/accounts/import-accounts-handl
 import { listAccountsHandler } from "./handlers/accounts/list-accounts-handler";
 import { getAccountsControlPlaneHandler } from "./handlers/accounts/get-accounts-control-plane-handler";
 import { getAccountSurfaceHandler } from "./handlers/accounts/get-account-surface-handler";
+import { getAccountReadinessHandler } from "./handlers/accounts/get-account-readiness-handler";
 import { getAccountAutomationOverviewHandler } from "./handlers/accounts/get-account-automation-overview-handler";
 import { queueAccountAutomationTickHandler } from "./handlers/accounts/queue-account-automation-tick-handler";
 import { pauseAccountAutomationHandler } from "./handlers/accounts/pause-account-automation-handler";
@@ -73,6 +74,11 @@ import { addWorkspaceMemberHandler } from "./handlers/workspaces/add-workspace-m
 import { updateWorkspaceMemberRoleHandler } from "./handlers/workspaces/update-workspace-member-role-handler";
 import { removeWorkspaceMemberHandler } from "./handlers/workspaces/remove-workspace-member-handler";
 import { createPostHandler } from "./handlers/connector-x/create-post-handler";
+import { followUserHandler } from "./handlers/connector-x/follow-user-handler";
+import { lookupPostsHandler } from "./handlers/connector-x/lookup-posts-handler";
+import { repostPostHandler } from "./handlers/connector-x/repost-post-handler";
+import { commentOnPostHandler } from "./handlers/connector-x/comment-on-post-handler";
+import { replyToPostHandler } from "./handlers/connector-x/reply-to-post-handler";
 import { getAccountProfileHandler } from "./handlers/connector-x/get-account-profile-handler";
 import { pullMentionsHandler } from "./handlers/connector-x/pull-mentions-handler";
 import { pullDirectMessagesHandler } from "./handlers/connector-x/pull-direct-messages-handler";
@@ -351,6 +357,7 @@ export async function routeRequest(context: AppContext, request: Request): Promi
 
     const accountMatch = pathname.match(/^\/accounts\/([^/]+)$/);
     const accountSurfaceMatch = pathname.match(/^\/accounts\/([^/]+)\/surface$/);
+    const accountReadinessMatch = pathname.match(/^\/accounts\/([^/]+)\/readiness$/);
     const accountAutomationOverviewMatch = pathname.match(/^\/accounts\/([^/]+)\/automation-overview$/);
     const accountAutomationTickMatch = pathname.match(/^\/accounts\/([^/]+)\/automation\/tick$/);
     const accountAutomationPauseMatch = pathname.match(/^\/accounts\/([^/]+)\/automation\/pause$/);
@@ -359,6 +366,12 @@ export async function routeRequest(context: AppContext, request: Request): Promi
       const accountId = decodeURIComponent(accountSurfaceMatch[1]);
       await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
       const result = await getAccountSurfaceHandler(context.queries.getAccountSurface, accountId);
+      return jsonResponse(result, { status: result.ok ? 200 : 404 });
+    }
+    if (request.method === "GET" && accountReadinessMatch) {
+      const accountId = decodeURIComponent(accountReadinessMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const result = await getAccountReadinessHandler(context.queries.getAccountReadiness, accountId);
       return jsonResponse(result, { status: result.ok ? 200 : 404 });
     }
     if (request.method === "GET" && accountAutomationOverviewMatch) {
@@ -481,6 +494,68 @@ export async function routeRequest(context: AppContext, request: Request): Promi
       const payload = await readJson<{ text: string }>(request);
       const result = await createPostHandler(context.commands.createPost, {
         account_id: accountId,
+        text: payload.text,
+      });
+      return jsonResponse(result, { status: result.ok ? 201 : 400 });
+    }
+
+    const followUserMatch = pathname.match(/^\/accounts\/([^/]+)\/engagement-actions\/follow$/);
+    const lookupPostsMatch = pathname.match(/^\/accounts\/([^/]+)\/engagement-actions\/posts\/lookup$/);
+    if (request.method === "POST" && followUserMatch) {
+      const accountId = decodeURIComponent(followUserMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const payload = await readJson<{ target_handle: string }>(request);
+      const result = await followUserHandler(context.commands.followUser, {
+        account_id: accountId,
+        target_handle: payload.target_handle,
+      });
+      return jsonResponse(result, { status: result.ok ? 201 : 400 });
+    }
+
+    if (request.method === "POST" && lookupPostsMatch) {
+      const accountId = decodeURIComponent(lookupPostsMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const payload = await readJson<{ post_ids: string[] }>(request);
+      const result = await lookupPostsHandler(context.commands.lookupPosts, {
+        account_id: accountId,
+        post_ids: payload.post_ids,
+      });
+      return jsonResponse(result, { status: result.ok ? 200 : 400 });
+    }
+
+    const repostPostMatch = pathname.match(/^\/accounts\/([^/]+)\/engagement-actions\/repost$/);
+    if (request.method === "POST" && repostPostMatch) {
+      const accountId = decodeURIComponent(repostPostMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const payload = await readJson<{ target_post_id: string }>(request);
+      const result = await repostPostHandler(context.commands.repostPost, {
+        account_id: accountId,
+        target_post_id: payload.target_post_id,
+      });
+      return jsonResponse(result, { status: result.ok ? 201 : 400 });
+    }
+
+    const commentOnPostMatch = pathname.match(/^\/accounts\/([^/]+)\/engagement-actions\/comment$/);
+    if (request.method === "POST" && commentOnPostMatch) {
+      const accountId = decodeURIComponent(commentOnPostMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const payload = await readJson<{ target_post_id: string; text: string }>(request);
+      const result = await commentOnPostHandler(context.commands.commentOnPost, {
+        account_id: accountId,
+        comment_on_external_post_id: payload.target_post_id,
+        text: payload.text,
+      });
+      return jsonResponse(result, { status: result.ok ? 201 : 400 });
+    }
+
+    const replyToPostMatch = pathname.match(/^\/accounts\/([^/]+)\/engagement-actions\/reply$/);
+    if (request.method === "POST" && replyToPostMatch) {
+      const accountId = decodeURIComponent(replyToPostMatch[1]);
+      await assertResourceWorkspace(context.sqlite.db, session, { type: "account", id: accountId });
+      const payload = await readJson<{ target_post_id: string; text: string }>(request);
+      const result = await replyToPostHandler(context.commands.replyToPost, {
+        account_id: accountId,
+        reply_to_external_post_id: payload.target_post_id,
         text: payload.text,
       });
       return jsonResponse(result, { status: result.ok ? 201 : 400 });
@@ -627,7 +702,8 @@ export async function routeRequest(context: AppContext, request: Request): Promi
     if (request.method === "POST" && contentBriefGenerateDraftMatch) {
       const briefId = decodeURIComponent(contentBriefGenerateDraftMatch[1]);
       await assertResourceWorkspace(context.sqlite.db, session, { type: "brief", id: briefId });
-      const result = await generateDraftFromContentBriefHandler(context.commands.generateDraftFromContentBrief, briefId);
+      const payload = await readJson<import("../../contracts/api/drafts").GenerateDraftRequest>(request);
+      const result = await generateDraftFromContentBriefHandler(context.commands.generateDraftFromContentBrief, briefId, payload);
       return jsonResponse(result, { status: result.ok ? 202 : 400 });
     }
 
@@ -911,8 +987,9 @@ export async function routeRequest(context: AppContext, request: Request): Promi
     if (request.method === "POST" && sourceFetchMatch) {
       const sourceId = decodeURIComponent(sourceFetchMatch[1]);
       await assertResourceWorkspace(context.sqlite.db, session, { type: "source", id: sourceId });
-      const result = await fetchSourceHandler(context.commands.fetchSource, sourceId);
-      return jsonResponse(result, { status: result.ok ? 202 : 400 });
+      const executeNow = url.searchParams.get("execute_now") === "1";
+      const result = await fetchSourceHandler(context.commands.fetchSource, sourceId, { execute_now: executeNow });
+      return jsonResponse(result, { status: result.ok ? (executeNow ? 200 : 202) : 400 });
     }
 
     const retrySourceFetchRunMatch = pathname.match(/^\/source-fetch-runs\/([^/]+)\/retry$/);

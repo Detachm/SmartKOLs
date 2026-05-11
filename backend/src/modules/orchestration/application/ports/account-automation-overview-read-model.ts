@@ -2,14 +2,19 @@ import type { AccountOrchestrationState } from "../../domain/account-orchestrati
 import type { ContentBriefGenerationMode } from "../../../content-briefs/domain/content-brief";
 import type { RecurringBriefPlanGenerationMode } from "../../../editorial/domain/editorial";
 import type { AutopostGenerationMode } from "../../../autopost/domain/autopost-policy";
+import type { EngagementPolicyRule } from "../../../engagement/domain/engagement-policy";
 
 export interface AccountAutomationOverview {
   account_id: string;
   workspace_id: string;
+  account_handle?: string;
   state?: AccountOrchestrationState;
   has_active_automation: boolean;
   next_due_at?: string;
   pending_draft_count: number;
+  pending_manual_review_draft_count?: number;
+  pending_auto_approve_draft_count?: number;
+  max_pending_manual_review_drafts: number;
   queued_or_running_content_tasks: Array<{
     task_id: string;
     task_type: "content_brief.generate" | "draft.generate";
@@ -36,6 +41,7 @@ export interface AccountAutomationOverview {
     next_run_after: string;
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts: number;
   };
   active_autopost_run?: {
     run_id: string;
@@ -64,11 +70,16 @@ export interface AccountAutomationOverview {
     last_message_at: string;
   };
   engagement_automation: {
+    policy_body?: EngagementPolicyRule;
     policy_status: "not_configured" | "active" | "paused";
     open_thread_count: number;
     policy_blocked_open_thread_count: number;
     pending_review_reply_count: number;
     approved_reply_pending_send_count: number;
+    today_follow_count: number;
+    today_repost_count: number;
+    today_comment_count: number;
+    today_reply_count: number;
     next_pending_review_reply?: {
       proposal_id: string;
       thread_id: string;

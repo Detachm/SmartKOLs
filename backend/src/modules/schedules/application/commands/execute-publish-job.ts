@@ -3,6 +3,7 @@ import type { Clock } from "../../../../core/time/clock";
 import type { DraftVersionRepository } from "../../../drafts/application/ports/draft-version-repository";
 import type { DraftsRepository } from "../../../drafts/application/ports/drafts-repository";
 import type { CreatePost } from "../../../connector-x/application/commands/create-post";
+import { classifyOperatorError } from "../../../monitoring/domain/operator-error-classification";
 import { markPublishJobRunning } from "../../domain/publish-job";
 import type { SchedulesRepository } from "../ports/schedules-repository";
 import type { MarkPublishFailed } from "./mark-publish-failed";
@@ -77,11 +78,65 @@ export class ExecutePublishJob {
       const appError = error instanceof AppError
         ? error
         : new AppError("EXTERNAL_DEPENDENCY_ERROR", "publish execution failed", { cause: error });
+      const delayedRetry = buildDelayedPublishRetry(runningJob, appError, this.deps.clock.now().toISOString());
+      if (delayedRetry) {
+        await this.deps.schedules.savePublishJob(delayedRetry);
+        return delayedRetry;
+      }
 
       await this.deps.markPublishFailed.execute(publishJobId, appError.code, appError.message);
       throw appError;
     }
   }
+}
+
+const MAX_AUTOMATIC_PUBLISH_RETRIES = 2;
+
+function buildDelayedPublishRetry(
+  job: ReturnType<typeof resolveRunningPublishJob>,
+  error: AppError,
+  now: string,
+): ReturnType<typeof resolveRunningPublishJob> | undefined {
+  const classification = classifyOperatorError({
+    status: "failed",
+    error_code: error.code,
+    error_message: error.message,
+  });
+  if (!classification?.auto_retry_recommended || !["temporary_external_error", "rate_limited"].includes(classification.category)) {
+    return undefined;
+  }
+
+  const attempt = countAutomaticPublishRetryAttempts(job.idempotency_key);
+  if (attempt >= MAX_AUTOMATIC_PUBLISH_RETRIES) {
+    return undefined;
+  }
+
+  const retryDelayMinutes = classification.category === "rate_limited" ? 30 : 15;
+  return {
+    ...job,
+    status: "queued",
+    idempotency_key: `${stripAutomaticPublishRetrySuffix(job.idempotency_key)}:auto-retry:${attempt + 1}:${now}`,
+    error_code: error.code,
+    error_message: error.message,
+    run_after: addMinutes(now, retryDelayMinutes),
+    started_at: undefined,
+    lease_expires_at: undefined,
+    finished_at: undefined,
+  };
+}
+
+function countAutomaticPublishRetryAttempts(idempotencyKey: string) {
+  const match = idempotencyKey.match(/:auto-retry:(\d+):/g);
+  if (!match || match.length === 0) {
+    return 0;
+  }
+
+  const last = match.at(-1)?.match(/:auto-retry:(\d+):/);
+  return last ? Number.parseInt(last[1] ?? "0", 10) || 0 : 0;
+}
+
+function stripAutomaticPublishRetrySuffix(idempotencyKey: string) {
+  return idempotencyKey.replace(/:auto-retry:\d+:.+$/, "");
 }
 
 function resolveRunningPublishJob(

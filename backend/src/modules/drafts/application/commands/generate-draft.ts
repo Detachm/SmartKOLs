@@ -21,6 +21,7 @@ export class GenerateDraft {
     topic?: string;
     trend_id?: string;
     content_brief_id?: string;
+    preview_mode?: boolean;
     automation?: AutopostAutomationContext;
   }) {
     const account = await this.deps.accounts.findById(input.account_id);
@@ -37,11 +38,14 @@ export class GenerateDraft {
       });
     }
 
-    const topic = typeof input.topic === "string" ? input.topic.trim() : "";
     const contentBriefId = typeof input.content_brief_id === "string" ? input.content_brief_id.trim() : "";
-    if (!topic && !contentBriefId) {
-      throw new AppError("VALIDATION_ERROR", "topic or content_brief_id is required", {
-        details: { account_id: input.account_id },
+    if (!contentBriefId) {
+      throw new AppError("VALIDATION_ERROR", "draft generation requires content_brief_id; generate a content brief first", {
+        details: {
+          account_id: input.account_id,
+          has_topic: typeof input.topic === "string" && input.topic.trim() !== "",
+          trend_id: input.trend_id,
+        },
       });
     }
 
@@ -54,9 +58,9 @@ export class GenerateDraft {
       target_id: account.id,
       payload: JSON.stringify({
         account_id: account.id,
-        topic: topic || undefined,
         trend_id: input.trend_id,
-        content_brief_id: contentBriefId || undefined,
+        content_brief_id: contentBriefId,
+        preview_mode: input.preview_mode === true ? true : undefined,
         automation: input.automation,
       }),
       created_at: this.deps.now(),

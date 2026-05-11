@@ -60,17 +60,18 @@ src/
 │   ├── accounts/           # 账号管理 + 账号详情（6 个子页）
 │   ├── calendar/           # 内容日历
 │   ├── drafts/             # 内容审核
+│   ├── ai-bd/              # AI BD 触达工作台
 │   ├── monitoring/         # 监控中心
 │   ├── settings/           # 设置 + 团队
+│   ├── api/                # Next Route Handlers 后端代理
+│   ├── auth/               # X OAuth 回调
 │   └── login/              # 登录页
 ├── components/
 │   ├── ui/                 # 基础 UI 组件（button/input/dialog 等）
 │   ├── layout/             # 导航、侧边栏、Cmd+K、通知中心
 │   ├── accounts/           # 账号相关组件（健康分卡片等）
-│   ├── persona/            # 人格配置组件（表单、蒸馏、标签输入）
-│   └── tour/               # 产品导览组件
-├── data/                   # Mock 数据（JSON）
-└── lib/                    # 状态管理、工具函数、导览步骤定义
+│   └── persona/            # 人格配置组件（表单、蒸馏、标签输入）
+└── lib/                    # 后端 API 客户端、session、工具函数
 ```
 
 ---
@@ -80,30 +81,36 @@ src/
 - **框架**：Next.js 14 (App Router) + TypeScript
 - **样式**：Tailwind CSS（响应式，支持桌面端 + 移动端）
 - **UI**：自建 shadcn 风格组件 + Radix UI
-- **状态**：React Context + localStorage 伪持久化
+- **状态**：真实 backend 读写 + SQLite 持久化
 - **部署**：本地开发可走 Next + backend + worker；正式环境建议走 AWS EC2 + Docker Compose + Caddy
 
 ---
 
 ## 当前状态
 
-当前仓库已经不是纯前端 mock demo。
+当前仓库已经不是纯前端演示项目。
 
 - 前端通过 Next Route Handlers 代理真实 backend
 - 本地登录使用真实 `user + workspace` session cookie
 - 主要页面默认读取真实 SQLite 数据
 - 长任务仍由独立 worker 执行，不在 HTTP 请求里偷偷跑完
 
-当前仍然保留了一部分历史演示数据和 smoke 数据库内容，但主链已经是“前端 + backend + worker”的真实运行模式。
+当前主链是“前端 + backend + worker”的真实运行模式；历史前端假数据层已经移除。
 
 ---
 
 ## 文档
 
-| 文档 | 说明 |
-|---|---|
-| [PRD.md](PRD.md) | 产品需求文档 —— 产品定位、用户场景、功能定义、商业模式、里程碑 |
-| [DEMO_TECHNICAL.md](DEMO_TECHNICAL.md) | Demo 技术文档 —— 技术栈、目录结构、数据模型、关键实现细节 |
+当前优先使用这些文档：
+
+- [docs/local-run.md](docs/local-run.md)
+  - 本地运行说明
+- [docs/aws-deployment.md](docs/aws-deployment.md)
+  - AWS 部署说明
+- [docs/vercel-x-auth.md](docs/vercel-x-auth.md)
+  - X OAuth 与 Vercel 回调说明
+- [backend/docs/RUNBOOK.md](backend/docs/RUNBOOK.md)
+  - 运行排障说明
 
 ---
 

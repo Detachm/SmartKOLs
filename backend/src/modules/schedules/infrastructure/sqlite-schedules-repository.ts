@@ -15,6 +15,24 @@ export class SqliteSchedulesRepository implements SchedulesRepository {
     );
   }
 
+  async listDueScheduledSchedules(now: string, limit: number): Promise<PublishSchedule[]> {
+    return this.db.all<PublishSchedule>(
+      `SELECT ps.id, ps.workspace_id, ps.account_id, ps.draft_id, ps.scheduled_for, ps.status, ps.created_at
+      FROM publish_schedules ps
+      WHERE ps.status = 'scheduled'
+        AND ps.scheduled_for <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM publish_jobs pj
+          WHERE pj.schedule_id = ps.id
+            AND pj.status IN ('queued', 'running', 'succeeded')
+        )
+      ORDER BY ps.scheduled_for ASC, ps.id ASC
+      LIMIT ?`,
+      [now, limit],
+    );
+  }
+
   async createSchedule(schedule: PublishSchedule): Promise<void> {
     this.createScheduleSync(schedule);
   }

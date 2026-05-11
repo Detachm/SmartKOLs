@@ -21,8 +21,24 @@ interface EvidenceRow {
 export class SqliteContentBriefsRepository implements ContentBriefsRepository {
   constructor(private readonly db: SqliteExecutor) {}
 
+  private mapBriefRow<T extends ContentBrief>(row: T): T {
+    return {
+      ...row,
+      trend_id: row.trend_id ?? undefined,
+      topic_hint: row.topic_hint ?? undefined,
+      topic: row.topic ?? undefined,
+      angle: row.angle ?? undefined,
+      audience: row.audience ?? undefined,
+      outline: row.outline ?? undefined,
+      source_scope: row.source_scope ?? undefined,
+      generated_by_run_id: row.generated_by_run_id ?? undefined,
+      error_code: row.error_code ?? undefined,
+      error_message: row.error_message ?? undefined,
+    };
+  }
+
   async findBriefById(briefId: string): Promise<ContentBrief | null> {
-    return this.db.get<ContentBrief>(
+    const row = this.db.get<ContentBrief>(
       `SELECT
         id, workspace_id, account_id, trend_id, status, generation_mode, topic_hint, topic, angle, audience, outline,
         source_scope, generated_by_run_id, error_code, error_message, created_at, updated_at
@@ -30,10 +46,12 @@ export class SqliteContentBriefsRepository implements ContentBriefsRepository {
       WHERE id = ?`,
       [briefId],
     );
+
+    return row ? this.mapBriefRow(row) : null;
   }
 
   async listBriefsByAccountId(accountId: string, limit: number): Promise<Array<ContentBrief & { evidence_count: number }>> {
-    return this.db.all<ContentBriefRow>(
+    const rows = this.db.all<ContentBriefRow>(
       `SELECT
         cb.id, cb.workspace_id, cb.account_id, cb.trend_id, cb.status, cb.generation_mode, cb.topic_hint, cb.topic,
         cb.angle, cb.audience, cb.outline, cb.source_scope, cb.generated_by_run_id, cb.error_code, cb.error_message,
@@ -45,6 +63,8 @@ export class SqliteContentBriefsRepository implements ContentBriefsRepository {
       LIMIT ?`,
       [accountId, limit],
     );
+
+    return rows.map((row) => this.mapBriefRow(row));
   }
 
   async saveBrief(brief: ContentBrief): Promise<void> {

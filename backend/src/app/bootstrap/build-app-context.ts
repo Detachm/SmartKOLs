@@ -5,6 +5,7 @@ import { CreateAccountGroup } from "../../modules/accounts/application/commands/
 import { AssignAccountsToGroup } from "../../modules/accounts/application/commands/assign-accounts-to-group";
 import { DeleteAccount } from "../../modules/accounts/application/commands/delete-account";
 import { ImportAccounts } from "../../modules/accounts/application/commands/import-accounts";
+import { GetAccountReadiness } from "../../modules/accounts/application/queries/get-account-readiness";
 import { UpdatePersona } from "../../modules/personas/application/commands/update-persona";
 import { DistillPersona } from "../../modules/personas/application/commands/distill-persona";
 import { GetPersona } from "../../modules/personas/application/queries/get-persona";
@@ -77,6 +78,10 @@ import { SqliteRateLimitBucketsRepository } from "../../modules/connector-x/infr
 import { SqliteEngagementRepository } from "../../modules/engagement/infrastructure/sqlite-engagement-repository";
 import { SqliteEngagementPoliciesRepository } from "../../modules/engagement/infrastructure/sqlite-engagement-policies-repository";
 import { CreatePost } from "../../modules/connector-x/application/commands/create-post";
+import { FollowUser } from "../../modules/connector-x/application/commands/follow-user";
+import { LookupPosts } from "../../modules/connector-x/application/commands/lookup-posts";
+import { RepostPost } from "../../modules/connector-x/application/commands/repost-post";
+import { CommentOnPost } from "../../modules/connector-x/application/commands/comment-on-post";
 import { PullMentions } from "../../modules/connector-x/application/commands/pull-mentions";
 import { PullDirectMessages } from "../../modules/connector-x/application/commands/pull-direct-messages";
 import { ReplyToPost } from "../../modules/connector-x/application/commands/reply-to-post";
@@ -95,6 +100,9 @@ import { GetAgentRunTrace } from "../../modules/agent-runtime/application/querie
 import { RunAgentTask } from "../../modules/agent-runtime/application/commands/run-agent-task";
 import { RetryAgentTask } from "../../modules/agent-runtime/application/commands/retry-agent-task";
 import { GenerateReplyProposal } from "../../modules/engagement/application/commands/generate-reply-proposal";
+import { ExecuteAutoComment } from "../../modules/engagement/application/commands/execute-auto-comment";
+import { ExecuteAutoFollow } from "../../modules/engagement/application/commands/execute-auto-follow";
+import { ExecuteAutoRepost } from "../../modules/engagement/application/commands/execute-auto-repost";
 import { ApproveReplyProposal } from "../../modules/engagement/application/commands/approve-reply-proposal";
 import { SendReplyProposal } from "../../modules/engagement/application/commands/send-reply-proposal";
 import { GetReplyProposal } from "../../modules/engagement/application/queries/get-reply-proposal";
@@ -270,6 +278,10 @@ export interface AppContext {
     getAccountProfile: GetAccountProfile;
     computeAccountHealthScore: ComputeAccountHealthScore;
     createPost: CreatePost;
+    followUser: FollowUser;
+    lookupPosts: LookupPosts;
+    repostPost: RepostPost;
+    commentOnPost: CommentOnPost;
     pullMentions: PullMentions;
     pullDirectMessages: PullDirectMessages;
     queuePullMentionsJob: QueuePullMentionsJob;
@@ -311,6 +323,7 @@ export interface AppContext {
     listAccountGroups: ListAccountGroups;
     getAccountsControlPlane: GetAccountsControlPlane;
     getAccountSurface: GetAccountSurface;
+    getAccountReadiness: GetAccountReadiness;
     listPersonaTemplates: ListPersonaTemplates;
     getAutopostPolicy: GetAutopostPolicy;
     listAutopostRuns: ListAutopostRuns;
@@ -509,7 +522,7 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     clock: systemClock,
   });
   const editDraft = new EditDraft({ drafts, versions, auditLogs, clock: systemClock });
-  const scheduleDraft = new ScheduleDraft({ drafts, schedules, auditLogs, clock: systemClock });
+  const scheduleDraft = new ScheduleDraft({ drafts, versions, schedules, auditLogs, clock: systemClock });
   const reschedulePublishSchedule = new ReschedulePublishSchedule({ schedules, drafts, auditLogs, clock: systemClock });
   const cancelPublishSchedule = new CancelPublishSchedule({ schedules, drafts, auditLogs, clock: systemClock });
   const queuePublishJob = new QueuePublishJob({ schedules, auditLogs, clock: systemClock });
@@ -517,8 +530,25 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     runtime,
     accounts,
     contentBriefs,
+    personas,
+    sources,
+    auditLogs,
     queueAccountAutomationTick,
     now: () => systemClock.now().toISOString(),
+  });
+  const executeSourceFetchRunCommand = new ExecuteSourceFetchRun({
+    sources,
+    fetcher: sourceFetcher,
+    artifactStore: configuredDependencies.artifactStore,
+    auditLogs,
+    alerts,
+    clock: systemClock,
+  });
+  const fetchSourceCommand = new FetchSource({
+    sources,
+    auditLogs,
+    executeSourceFetchRun: executeSourceFetchRunCommand,
+    clock: systemClock,
   });
   const refreshTrends = new RefreshTrends({ sources, trends, auditLogs, clock: systemClock });
   const failAutopostRun = new FailAutopostRun({
@@ -533,7 +563,10 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     policies: autopostPolicies,
     runs: autopostRuns,
     workerJobs,
+    sources,
     sourceDocuments: accountSourceDocumentReadModel,
+    fetchSource: fetchSourceCommand,
+    executeSourceFetchRun: executeSourceFetchRunCommand,
     trends,
     refreshTrends,
     generateContentBrief,
@@ -560,6 +593,7 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     auditLogs,
     clock: systemClock,
   });
+  const queueSendReplyProposalJob = new QueueSendReplyProposalJob({ engagement, workerJobs, auditLogs, clock: systemClock });
   const runAgentTask = new RunAgentTask({
     runtime,
     accounts,
@@ -574,7 +608,11 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     artifactStore: configuredDependencies.artifactStore,
     auditLogs,
     alerts,
+    autopostRuns,
+    failAutopostRun,
     queueAccountAutomationTick,
+    queueSendReplyProposalJob,
+    engagementPolicies,
     modelGateway,
     clock: systemClock,
   });
@@ -592,6 +630,43 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     runtime,
     engagement,
     now: () => systemClock.now().toISOString(),
+  });
+  const followUser = new FollowUser({ accounts, credentials, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock });
+  const repostPost = new RepostPost({ accounts, credentials, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock });
+  const commentOnPost = new CommentOnPost({ accounts, credentials, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock });
+  const executeAutoFollow = new ExecuteAutoFollow({
+    accounts,
+    policies: engagementPolicies,
+    credentials,
+    connectorRequests,
+    twitterClient,
+    followUser,
+    queueAccountAutomationTick,
+    trends,
+    clock: systemClock,
+  });
+  const executeAutoRepost = new ExecuteAutoRepost({
+    accounts,
+    policies: engagementPolicies,
+    credentials,
+    connectorRequests,
+    twitterClient,
+    repostPost,
+    queueAccountAutomationTick,
+    trends,
+    clock: systemClock,
+  });
+  const executeAutoComment = new ExecuteAutoComment({
+    accounts,
+    policies: engagementPolicies,
+    credentials,
+    connectorRequests,
+    twitterClient,
+    commentOnPost,
+    queueAccountAutomationTick,
+    modelGateway,
+    trends,
+    clock: systemClock,
   });
   const tickAccountAutomation = new TickAccountAutomation({
     accounts,
@@ -611,8 +686,12 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       finalizeAutopostRun,
       generateDraft,
       executeRecurringBriefPlan,
+      executeAutoComment,
+      executeAutoFollow,
+      executeAutoRepost,
       generateReplyProposal,
     }),
+    queueAccountAutomationTick,
     alerts,
     auditLogs,
     clock: systemClock,
@@ -645,13 +724,14 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       engagement,
       policies: engagementPolicies,
       accounts,
+      lookupPosts: new LookupPosts({ accounts, credentials, twitterClient }),
       replyToPost,
       sendDirectMessage,
       queueAccountAutomationTick,
       auditLogs,
       clock: systemClock,
     }),
-    autopostPolicies,
+    executeAutopostPolicy,
     recurringBriefPlans,
     queueAccountAutomationTick,
     tickAccountAutomation,
@@ -667,7 +747,7 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     overview: getOperationsOverview,
     clock: systemClock,
   });
-  const retryPublishJob = new RetryPublishJob({ schedules, drafts, auditLogs, clock: systemClock });
+  const retryPublishJob = new RetryPublishJob({ schedules, drafts, versions, auditLogs, clock: systemClock });
   const retryAgentTask = new RetryAgentTask({ runtime });
   const retrySourceFetchRun = new RetrySourceFetchRun({ sources, auditLogs, clock: systemClock });
   const retryWorkerJob = new RetryWorkerJob({ workerJobs, clock: systemClock });
@@ -678,7 +758,6 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
     retryPublishJob,
     retrySourceFetchRun,
   });
-  const queueSendReplyProposalJob = new QueueSendReplyProposalJob({ engagement, workerJobs, auditLogs, clock: systemClock });
   const cleanupStaleRuntimeProcesses = new CleanupStaleRuntimeProcesses({
     processes: runtimeProcesses,
     clock: systemClock,
@@ -804,6 +883,14 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       generateDraftFromContentBrief: new GenerateDraftFromContentBrief({
         contentBriefs,
         generateDraft,
+        accounts,
+        personas,
+        sources,
+        drafts,
+        versions,
+        auditLogs,
+        modelGateway,
+        now: () => systemClock.now().toISOString(),
       }),
       generateDraftReview: new GenerateDraftReview({
         runtime,
@@ -842,6 +929,10 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       }),
       computeAccountHealthScore,
       createPost: new CreatePost({ accounts, credentials, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock }),
+      followUser,
+      lookupPosts: new LookupPosts({ accounts, credentials, twitterClient }),
+      repostPost,
+      commentOnPost,
       pullMentions: new PullMentions({ accounts, credentials, engagement, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock }),
       pullDirectMessages: new PullDirectMessages({ accounts, credentials, engagement, connectorRequests, rateLimitBuckets, twitterClient, clock: systemClock }),
       queuePullMentionsJob: new QueuePullMentionsJob({ accounts, workerJobs, auditLogs, clock: systemClock }),
@@ -884,6 +975,7 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
         engagement,
         policies: engagementPolicies,
         accounts,
+        lookupPosts: new LookupPosts({ accounts, credentials, twitterClient }),
         replyToPost,
         sendDirectMessage,
         queueAccountAutomationTick,
@@ -896,15 +988,8 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       pauseSource: new PauseSource({ sources, auditLogs, clock: systemClock }),
       resumeSource: new ResumeSource({ sources, auditLogs, clock: systemClock }),
       ingestSourceDocuments: new IngestSourceDocuments({ sources, auditLogs, clock: systemClock }),
-      fetchSource: new FetchSource({ sources, auditLogs, clock: systemClock }),
-      executeSourceFetchRun: new ExecuteSourceFetchRun({
-        sources,
-        fetcher: sourceFetcher,
-        artifactStore: configuredDependencies.artifactStore,
-        auditLogs,
-        alerts,
-        clock: systemClock,
-      }),
+      fetchSource: fetchSourceCommand,
+      executeSourceFetchRun: executeSourceFetchRunCommand,
       retrySourceFetchRun,
       retryMonitoringQueueBacklog,
       cleanupStaleRuntimeProcesses,
@@ -931,7 +1016,12 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
       getAccountsControlPlane: new GetAccountsControlPlane({ readModel: accountsControlPlaneReadModel }),
       getAccountSurface: new GetAccountSurface({ readModel: accountSurfaceReadModel }),
       listPersonaTemplates: new ListPersonaTemplates({ templates: personaTemplates, workspaces }),
-      getAutopostPolicy: new GetAutopostPolicy({ policies: autopostPolicies }),
+      getAutopostPolicy: new GetAutopostPolicy({
+        policies: autopostPolicies,
+        sources,
+        sourceDocuments: accountSourceDocumentReadModel,
+        clock: systemClock,
+      }),
       listAutopostRuns: new ListAutopostRuns({ accounts, runs: autopostRuns }),
       listAlertChannels: new ListAlertChannels({ channels: alertChannels }),
       getAppChromeOverview: new GetAppChromeOverview({ readModel: appChromeOverviewReadModel }),
@@ -946,6 +1036,21 @@ export async function buildAppContext(options: BuildAppContextOptions): Promise<
         eligibility: new EvaluateAccountEligibility(),
         chief: new ChiefOrchestrator(),
         clock: systemClock,
+      }),
+      getAccountReadiness: new GetAccountReadiness({
+        credentials,
+        personas,
+        sources,
+        autopostPolicies,
+        engagementPolicies,
+        getAccountSurface: new GetAccountSurface({ readModel: accountSurfaceReadModel }),
+        getAccountAutomationOverview: new GetAccountAutomationOverview({
+          readModel: accountAutomationOverviewReadModel,
+          runs: orchestrationRuns,
+          eligibility: new EvaluateAccountEligibility(),
+          chief: new ChiefOrchestrator(),
+          clock: systemClock,
+        }),
       }),
       listContentBriefs: new ListContentBriefs({ contentBriefs, sources, trends }),
       getContentBrief: new GetContentBrief({ contentBriefs, sources, trends }),

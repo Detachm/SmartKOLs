@@ -17,7 +17,7 @@ export class SqliteCredentialSecretStore implements CredentialSecretStore {
   ) {}
 
   async readOAuth1Secret(secretRef: string): Promise<OAuth1CredentialSecret> {
-    const value = this.readEnvJsonSecret(secretRef);
+    const value = await this.readCredentialJsonSecret(secretRef, ["x_oauth1"]);
     return {
       access_token: requireJsonString(value, "access_token"),
       access_token_secret: requireJsonString(value, "access_token_secret"),
@@ -25,10 +25,7 @@ export class SqliteCredentialSecretStore implements CredentialSecretStore {
   }
 
   async readOAuth2Secret(secretRef: string): Promise<OAuth2CredentialSecret> {
-    const value = await this.vault.readJsonSecret(secretRef, {
-      namespace: "connector_x",
-      expected_kinds: ["x_oauth2"],
-    }) as JsonObject;
+    const value = await this.readCredentialJsonSecret(secretRef, ["x_oauth2"]);
     return {
       access_token: requireJsonString(value, "access_token"),
       refresh_token: requireJsonString(value, "refresh_token"),
@@ -40,10 +37,20 @@ export class SqliteCredentialSecretStore implements CredentialSecretStore {
   }
 
   async readApiKeySecret(secretRef: string): Promise<ApiKeyCredentialSecret> {
-    const value = this.readEnvJsonSecret(secretRef);
+    const value = await this.readCredentialJsonSecret(secretRef, ["api_key"]);
     return {
       bearer_token: requireJsonString(value, "bearer_token"),
     };
+  }
+
+  async upsertOAuth1Secret(existingSecretRef: string | undefined, secret: OAuth1CredentialSecret): Promise<string> {
+    const now = new Date().toISOString();
+    return this.vault.upsertJsonSecret(existingSecretRef, {
+      namespace: "connector_x",
+      kind: "x_oauth1",
+      secret,
+      now,
+    });
   }
 
   async upsertOAuth2Secret(existingSecretRef: string | undefined, secret: OAuth2CredentialSecret): Promise<string> {
@@ -56,10 +63,31 @@ export class SqliteCredentialSecretStore implements CredentialSecretStore {
     });
   }
 
+  async upsertApiKeySecret(existingSecretRef: string | undefined, secret: ApiKeyCredentialSecret): Promise<string> {
+    const now = new Date().toISOString();
+    return this.vault.upsertJsonSecret(existingSecretRef, {
+      namespace: "connector_x",
+      kind: "api_key",
+      secret,
+      now,
+    });
+  }
+
   async deleteManagedSecret(secretRef: string | undefined): Promise<void> {
     await this.vault.deleteManagedSecret(secretRef, {
       namespace: "connector_x",
     });
+  }
+
+  private async readCredentialJsonSecret(secretRef: string, expectedKinds: readonly string[]): Promise<JsonObject> {
+    if (secretRef.startsWith("managed:")) {
+      return this.vault.readJsonSecret(secretRef, {
+        namespace: "connector_x",
+        expected_kinds: expectedKinds,
+      }) as Promise<JsonObject>;
+    }
+
+    return this.readEnvJsonSecret(secretRef);
   }
 
   private readEnvJsonSecret(secretRef: string): JsonObject {

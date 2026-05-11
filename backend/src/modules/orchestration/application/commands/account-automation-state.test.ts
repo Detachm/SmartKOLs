@@ -31,6 +31,10 @@ class InMemoryStatesRepository implements AccountOrchestrationStatesRepository {
     return this.state;
   }
 
+  async listDueAutomationTickCandidates() {
+    return [];
+  }
+
   async save(state: AccountOrchestrationState): Promise<void> {
     this.state = state;
   }

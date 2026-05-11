@@ -29,6 +29,19 @@ export class SqliteWorkerJobsRepository implements WorkerJobsRepository {
     );
   }
 
+  async findLatestByTypeAndTarget(jobType: WorkerJobType, targetType: string, targetId: string): Promise<WorkerJob | null> {
+    return this.db.get<WorkerJob>(
+      `SELECT
+        id, workspace_id, job_type, target_type, target_id, payload, status, run_after, lease_expires_at,
+        error_code, error_message, started_at, finished_at, created_at
+      FROM worker_jobs
+      WHERE job_type = ? AND target_type = ? AND target_id = ?
+      ORDER BY COALESCE(finished_at, started_at, run_after, created_at) DESC, created_at DESC, id DESC
+      LIMIT 1`,
+      [jobType, targetType, targetId],
+    );
+  }
+
   async listByWorkspaceAndStatus(workspaceId: string, status: WorkerJob["status"], limit: number): Promise<WorkerJob[]> {
     return this.db.all<WorkerJob>(
       `SELECT

@@ -19,11 +19,13 @@ function toSlug(value: string) {
 export default function LoginClientPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
+  const connected = searchParams.get("connected") === "1";
+  const connectedAccountId = searchParams.get("account_id");
+  const [email, setEmail] = useState("liuhan010407@gmail.com");
+  const [name, setName] = useState("Operator");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
-  const [workspaceSlug, setWorkspaceSlug] = useState("");
+  const [workspaceSlug, setWorkspaceSlug] = useState("test");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,10 +84,10 @@ export default function LoginClientPage() {
           </div>
 
           <div className="max-w-xl space-y-4">
-            <h1 className="text-4xl font-bold leading-tight">真实会话、真实 workspace、真实执行面</h1>
+            <h1 className="text-4xl font-bold leading-tight">一个后台，统一管理账号、内容与互动</h1>
             <p className="text-sm leading-6 text-white/70">
-              登录不再写 `localStorage` 假状态。本地模式下，只有空 workspace 才允许创建第一位 owner；
-              已存在成员的 workspace 只允许已加入成员进入，不再匿名枚举全部租户。
+              在同一个工作区里管理账号人格、信息源、草稿审核、排期发布和互动自动化，
+              让团队协作更清晰，日常运营更高效。
             </p>
           </div>
 
@@ -93,23 +95,23 @@ export default function LoginClientPage() {
             {[
               {
                 icon: Sparkles,
-                title: "Session 真正绑定 user + workspace",
-                detail: "live 页面由 cookie session 保护，不再把登录当成演示按钮。",
+                title: "账号矩阵统一管理",
+                detail: "每个账号都能独立配置人格、风格、信息源和自动化策略。",
               },
               {
                 icon: Users,
-                title: "团队成员来自 users / workspace_members",
-                detail: "后续 settings 页里的邀请、改角色、移除成员都落真实持久化。",
+                title: "内容生产一条链完成",
+                detail: "从选题、成稿、审核到排期发布，都在同一个工作区里推进。",
               },
               {
                 icon: Zap,
-                title: "Analytics 只展示可追溯指标",
-                detail: "不会再伪造 likes / retweets；只展示 drafts / publish / source / connector 的真实数据。",
+                title: "团队协作更清晰",
+                detail: "运营、审核和管理动作集中在一个入口里，减少来回沟通和切换。",
               },
               {
                 icon: Shield,
-                title: "无静默回退",
-                detail: "没有 session、没有 workspace、无权访问时都会显式失败，而不是偷偷给 demo 数据。",
+                title: "运行状态清晰可见",
+                detail: "发帖、互动、排期和异常状态都可以在页面里直接查看和处理。",
               },
             ].map((item) => (
               <div key={item.title} className="flex gap-3">
@@ -127,10 +129,10 @@ export default function LoginClientPage() {
 
         <section className="p-8 md:p-12">
           <div className="space-y-2">
-            <p className="text-xs uppercase tracking-[0.18em] text-[#999999]">Local Access</p>
-            <h2 className="text-3xl font-semibold tracking-tight text-[#111111]">登录到当前环境</h2>
+            <p className="text-xs uppercase tracking-[0.18em] text-[#999999]">Workspace Access</p>
+            <h2 className="text-3xl font-semibold tracking-tight text-[#111111]">工作区登录</h2>
             <p className="text-sm text-[#666666]">
-              先选择一个 workspace，再用邮箱和姓名建立或恢复本地 session。
+              输入工作区、邮箱和姓名后进入控制台。如果是新环境，也可以先创建一个工作区。
             </p>
           </div>
 
@@ -138,10 +140,16 @@ export default function LoginClientPage() {
             <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
           ) : null}
 
+          {connected ? (
+            <div className="mt-6 rounded-2xl border border-[#D7F3E6] bg-[#F4FCF8] px-4 py-3 text-sm text-[#0F6B45]">
+              X 账号绑定已完成{connectedAccountId ? `（账号 ID：${connectedAccountId}）` : ""}。请重新登录工作区，继续后续配置和运营操作。
+            </div>
+          ) : null}
+
           <div className="mt-8 space-y-6">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-[#111111]">Workspace Slug</label>
+                <label className="text-sm font-medium text-[#111111]">工作区标识</label>
                 <button
                   type="button"
                   onClick={() => setCreatingWorkspace((value) => !value)}
@@ -154,10 +162,10 @@ export default function LoginClientPage() {
               <Input
                 value={workspaceSlug}
                 onChange={(event) => setWorkspaceSlug(toSlug(event.target.value))}
-                placeholder="workspace-slug"
+                placeholder="例如：team-alpha"
               />
               <p className="text-xs leading-5 text-[#777777]">
-                不再匿名展示全部 workspace。已存在成员的 workspace 需要输入正确 slug，并且邮箱必须已经是成员。
+                已有工作区请输入标识；如果是首次使用，可以先创建一个新的工作区。
               </p>
 
               {creatingWorkspace ? (

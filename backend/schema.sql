@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS source_documents (
 CREATE TABLE IF NOT EXISTS trends (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
+  cluster_key TEXT NOT NULL,
   topic TEXT NOT NULL,
   category TEXT NOT NULL,
   score REAL NOT NULL,

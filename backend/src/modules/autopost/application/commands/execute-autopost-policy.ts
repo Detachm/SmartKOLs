@@ -4,6 +4,8 @@ import type { Clock } from "../../../../core/time/clock";
 import type { AutopostRunNowResponse } from "../../../../contracts/api/autopost-policies";
 import type { AuditLogRepository } from "../../../audit/application/ports/audit-log-repository";
 import type { GenerateContentBrief } from "../../../content-briefs/application/commands/generate-content-brief";
+import type { FetchSource } from "../../../sources/application/commands/fetch-source";
+import type { ExecuteSourceFetchRun } from "../../../sources/application/commands/execute-source-fetch-run";
 import {
   createAccountActiveSourcesContentBriefSourceScope,
   DEFAULT_CONTENT_BRIEF_SOURCE_SCOPE_LIMIT,
@@ -17,18 +19,28 @@ import type { TrendsRepository } from "../../../trends/application/ports/trends-
 import type { AccountSourceDocumentsReadModel } from "../../../sources/application/queries/list-account-source-documents";
 import { computeNextRecurringRunAfter } from "../../../editorial/domain/recurring-schedule";
 import type { SourceDocument } from "../../../sources/domain/source-document";
+import type { SourcesRepository } from "../../../sources/application/ports/sources-repository";
+import type { Source } from "../../../sources/domain/source";
 import type { AutopostPoliciesRepository } from "../ports/autopost-policies-repository";
 import type { AutopostRunsRepository } from "../ports/autopost-runs-repository";
 import { createAutopostAutomationContext } from "../../domain/autopost-automation-context";
 import { createAutopostPolicy, type AutopostCadence } from "../../domain/autopost-policy";
 import { createAutopostRun, markAutopostRunBriefGenerating } from "../../domain/autopost-run";
+import {
+  computeAutopostSourceRefreshCutoff,
+  isSourceFresh,
+  summarizeAutopostSourceFreshness,
+} from "../../domain/source-freshness";
 import { syncAutopostPolicyWorkerJob } from "../worker-job-sync";
 
 export interface ExecuteAutopostPolicyDependencies {
   policies: AutopostPoliciesRepository;
   runs: AutopostRunsRepository;
   workerJobs: WorkerJobsRepository;
+  sources: SourcesRepository;
   sourceDocuments: AccountSourceDocumentsReadModel;
+  fetchSource: FetchSource;
+  executeSourceFetchRun: ExecuteSourceFetchRun;
   trends: TrendsRepository;
   refreshTrends: RefreshTrends;
   generateContentBrief: GenerateContentBrief;
@@ -105,6 +117,14 @@ export class ExecuteAutopostPolicy {
     await syncAutopostPolicyWorkerJob(this.deps.workerJobs, this.deps.clock, nextPolicy);
 
     try {
+      await this.refreshActiveSources({
+        account_id: policy.account_id,
+        workspace_id: policy.workspace_id,
+        policy_id: policy.id,
+        run_id: run.id,
+        source_types: sourceScope.source_types,
+        started_at: now,
+      });
       const scopedDocuments = await this.loadScopedDocuments(policy.account_id, {
         source_types: sourceScope.source_types,
         published_from: sourceScope.published_from,
@@ -215,6 +235,122 @@ export class ExecuteAutopostPolicy {
         created_at: failedAt,
       }));
       throw appError;
+    }
+  }
+
+  private async refreshActiveSources(input: {
+    account_id: string;
+    workspace_id: string;
+    policy_id: string;
+    run_id: string;
+    source_types: Source["type"][];
+    started_at: string;
+  }) {
+    const relevantSources = (await this.deps.sources.listSourcesByAccountId(input.account_id))
+      .filter((source) => source.status === "active" && input.source_types.includes(source.type));
+
+    if (relevantSources.length === 0) {
+      throw new AppError("INVALID_STATE", "autopost policy has no active sources matching configured source_types", {
+        details: {
+          autopost_policy_id: input.policy_id,
+          account_id: input.account_id,
+          source_types: input.source_types,
+        },
+      });
+    }
+
+    const refreshResults = await Promise.all(relevantSources.map(async (source) => {
+      try {
+        await this.deps.fetchSource.execute(source.id, { execute_now: true });
+        return {
+          source,
+          status: "succeeded" as const,
+        };
+      } catch (error) {
+        const appError = error instanceof AppError
+          ? error
+          : new AppError("EXTERNAL_DEPENDENCY_ERROR", "source refresh failed before autopost execution", { cause: error });
+        return {
+          source,
+          status: "failed" as const,
+          error: appError,
+        };
+      }
+    }));
+
+    const refreshedSources = (await this.deps.sources.listSourcesByAccountId(input.account_id))
+      .filter((source) => source.status === "active" && input.source_types.includes(source.type));
+    const freshnessCutoff = computeAutopostSourceRefreshCutoff(input.started_at);
+    const freshnessSummary = summarizeAutopostSourceFreshness({
+      started_at: input.started_at,
+      source_types: input.source_types,
+      relevant_sources: refreshedSources,
+    });
+    const freshSources = refreshedSources.filter((source) => isSourceFresh(source, freshnessCutoff));
+    const failedSources = refreshResults.filter((result) => result.status === "failed");
+
+    if (freshSources.length === 0) {
+      throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "autopost source freshness gate blocked execution because no configured source refreshed recently enough", {
+        details: {
+          autopost_policy_id: input.policy_id,
+          autopost_run_id: input.run_id,
+          account_id: input.account_id,
+          freshness: freshnessSummary,
+          failed_sources: failedSources.map((entry) => ({
+            source_id: entry.source.id,
+            source_name: entry.source.name,
+            source_type: entry.source.type,
+            error_code: entry.error.code,
+            error_message: entry.error.message,
+          })),
+        },
+      });
+    }
+
+    if (failedSources.length > 0) {
+      const warningMessage = `autopost continued with ${failedSources.length} source refresh failure(s)`;
+      await this.deps.auditLogs.append({
+        id: newId(),
+        workspace_id: input.workspace_id,
+        actor_type: "system",
+        entity_type: "autopost_run",
+        entity_id: input.run_id,
+        action: "autopost_run.source_refresh_degraded",
+        after_state: JSON.stringify({
+          autopost_policy_id: input.policy_id,
+          freshness: freshnessSummary,
+          failed_sources: failedSources.map((entry) => ({
+            source_id: entry.source.id,
+            source_name: entry.source.name,
+            source_type: entry.source.type,
+            error_code: entry.error.code,
+            error_message: entry.error.message,
+          })),
+        }),
+        created_at: this.deps.clock.now().toISOString(),
+      });
+      await this.deps.alerts.create(createAlert({
+        id: newId(),
+        workspace_id: input.workspace_id,
+        severity: "warning",
+        source_type: "runtime",
+        source_id: input.run_id,
+        code: "autopost.source_refresh.partial_failure",
+        message: warningMessage,
+        payload: JSON.stringify({
+          autopost_run_id: input.run_id,
+          autopost_policy_id: input.policy_id,
+          freshness: freshnessSummary,
+          failed_sources: failedSources.map((entry) => ({
+            source_id: entry.source.id,
+            source_name: entry.source.name,
+            source_type: entry.source.type,
+            error_code: entry.error.code,
+            error_message: entry.error.message,
+          })),
+        }),
+        created_at: this.deps.clock.now().toISOString(),
+      }));
     }
   }
 

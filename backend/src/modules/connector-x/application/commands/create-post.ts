@@ -10,6 +10,7 @@ import type { RateLimitBucketsRepository } from "../ports/rate-limit-buckets-rep
 import type { TwitterClient } from "../ports/twitter-client";
 import { assertCredentialUsable } from "../../domain/account-credential";
 import type { ConnectorRequest } from "../../domain/connector-request";
+import { assertXPostWithinLimit } from "../../domain/x-post-length";
 import { syncRateLimitBucket } from "../rate-limit-sync";
 
 export interface CreatePostDependencies {
@@ -25,6 +26,13 @@ export class CreatePost {
   constructor(private readonly deps: CreatePostDependencies) {}
 
   async execute(input: { account_id: string; text: string; idempotency_key_override?: string }) {
+    assertXPostWithinLimit(input.text, {
+      message: "post exceeds X weighted length limit and cannot be published",
+      details: {
+        account_id: input.account_id,
+      },
+    });
+
     const account = await this.deps.accounts.findById(input.account_id);
     if (!account) {
       throw new AppError("NOT_FOUND", "account not found", {
@@ -150,13 +158,18 @@ async function reserveConnectorRequest(input: {
     input.request.idempotency_key ?? "",
   );
   if (existing) {
-    throw new AppError("CONFLICT", "connector idempotency key already exists", {
+    const previousFailure = existing.status === "failed" && existing.error_message
+      ? `; previous request failed with ${existing.error_code ?? "UNKNOWN"}: ${existing.error_message}`
+      : "";
+    throw new AppError("CONFLICT", `connector idempotency key already exists${previousFailure}`, {
       details: {
         account_id: input.request.account_id,
         endpoint_code: input.request.endpoint_code,
         idempotency_key: input.request.idempotency_key,
         existing_connector_request_id: existing.id,
         existing_status: existing.status,
+        existing_error_code: existing.error_code,
+        existing_error_message: existing.error_message,
       },
     });
   }

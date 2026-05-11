@@ -4,17 +4,7 @@ import type { AuditLogRepository } from "../../../audit/application/ports/audit-
 import type { SourcesRepository } from "../../../sources/application/ports/sources-repository";
 import type { TrendsRepository } from "../ports/trends-repository";
 import { createTrend } from "../../domain/trend";
-
-function normalizeTopic(title: string): string {
-  const words = title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((word) => word.length >= 4)
-    .slice(0, 6);
-
-  return words.join(" ").trim();
-}
+import { buildTrendTopicSnapshot } from "../../domain/trend-clustering";
 
 function inferCategory(title: string): string {
   const lower = title.toLowerCase();
@@ -36,15 +26,16 @@ export class RefreshTrends {
 
   async execute(workspaceId: string) {
     const documents = await this.deps.sources.listRecentDocumentsByWorkspaceId(workspaceId, 200);
-    const clusters = new Map<string, { topic: string; category: string; score: number; detected_at: string }>();
+    const existingTrends = await this.deps.trends.listByWorkspaceId(workspaceId);
+    const clusters = new Map<string, { cluster_key: string; topic: string; category: string; score: number; detected_at: string }>();
 
     for (const document of documents) {
-      const topic = normalizeTopic(document.title);
-      if (!topic) {
+      const snapshot = buildTrendTopicSnapshot(document.title);
+      if (!snapshot.cluster_key) {
         continue;
       }
 
-      const current = clusters.get(topic);
+      const current = clusters.get(snapshot.cluster_key);
       const scoreIncrement = document.published_at ? 2 : 1;
       if (current) {
         current.score += scoreIncrement;
@@ -52,8 +43,9 @@ export class RefreshTrends {
           current.detected_at = document.published_at;
         }
       } else {
-        clusters.set(topic, {
-          topic,
+        clusters.set(snapshot.cluster_key, {
+          cluster_key: snapshot.cluster_key,
+          topic: snapshot.topic,
           category: inferCategory(document.title),
           score: scoreIncrement,
           detected_at: document.published_at ?? document.created_at,
@@ -63,11 +55,13 @@ export class RefreshTrends {
 
     const now = this.deps.clock.now().toISOString();
     let refreshed = 0;
+    let archived = 0;
     for (const cluster of Array.from(clusters.values())) {
-      const existing = await this.deps.trends.findByWorkspaceAndTopic(workspaceId, cluster.topic);
+      const existing = await this.deps.trends.findByWorkspaceAndClusterKey(workspaceId, cluster.cluster_key);
       const trend = createTrend({
         id: existing?.id ?? newId(),
         workspace_id: workspaceId,
+        cluster_key: cluster.cluster_key,
         topic: cluster.topic,
         category: cluster.category,
         score: cluster.score,
@@ -79,6 +73,19 @@ export class RefreshTrends {
       refreshed += 1;
     }
 
+    for (const existing of existingTrends) {
+      if (clusters.has(existing.cluster_key) || existing.status === "archived") {
+        continue;
+      }
+
+      await this.deps.trends.save(createTrend({
+        ...existing,
+        status: "archived",
+        updated_at: now,
+      }));
+      archived += 1;
+    }
+
     await this.deps.auditLogs.append({
       id: newId(),
       workspace_id: workspaceId,
@@ -86,10 +93,10 @@ export class RefreshTrends {
       entity_type: "trend",
       entity_id: workspaceId,
       action: "trends.refreshed",
-      after_state: JSON.stringify({ refreshed_count: refreshed }),
+      after_state: JSON.stringify({ refreshed_count: refreshed, archived_count: archived }),
       created_at: now,
     });
 
-    return { refreshed_count: refreshed };
+    return { refreshed_count: refreshed, archived_count: archived };
   }
 }

@@ -43,7 +43,7 @@ export function approveDraftState(draft: Draft, updatedAt: string): Draft {
 }
 
 export function rejectDraftState(draft: Draft, updatedAt: string): Draft {
-  if (draft.status !== "pending") {
+  if (!["pending", "failed"].includes(draft.status)) {
     throw new AppError("INVALID_STATE", `draft cannot transition from ${draft.status} to rejected`, {
       details: { draft_id: draft.id, from: draft.status, to: "rejected" },
     });

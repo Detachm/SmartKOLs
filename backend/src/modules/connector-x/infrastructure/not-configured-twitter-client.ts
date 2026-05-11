@@ -20,6 +20,24 @@ export class NotConfiguredTwitterClient implements TwitterClient {
     });
   }
 
+  async commentOnPost(): Promise<never> {
+    throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
+      details: { dependency: "connector-x.twitter-client" },
+    });
+  }
+
+  async followUser(): Promise<never> {
+    throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
+      details: { dependency: "connector-x.twitter-client" },
+    });
+  }
+
+  async repostPost(): Promise<never> {
+    throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
+      details: { dependency: "connector-x.twitter-client" },
+    });
+  }
+
   async sendDirectMessage(): Promise<never> {
     throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
       details: { dependency: "connector-x.twitter-client" },
@@ -39,6 +57,18 @@ export class NotConfiguredTwitterClient implements TwitterClient {
   }
 
   async listUserPosts(): Promise<never> {
+    throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
+      details: { dependency: "connector-x.twitter-client" },
+    });
+  }
+
+  async lookupPosts(): Promise<never> {
+    throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
+      details: { dependency: "connector-x.twitter-client" },
+    });
+  }
+
+  async searchRecentPosts(): Promise<never> {
     throw new AppError("EXTERNAL_DEPENDENCY_ERROR", "twitter client is not configured", {
       details: { dependency: "connector-x.twitter-client" },
     });

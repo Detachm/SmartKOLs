@@ -1,6 +1,8 @@
 import { readFileSync } from "fs";
 import path from "path";
 import type { SqliteExecutor } from "./sqlite-executor";
+import { formatTrendDisplayTopic, normalizeTrendClusterKey, shouldRepairTrendTopic } from "../../modules/trends/domain/trend-clustering";
+import { sanitizeLegacyEngagementAutomationTargets } from "../../modules/engagement/application/engagement-policy-validation";
 
 interface TableColumnRow {
   name: string;
@@ -54,6 +56,7 @@ export function applySchema(db: SqliteExecutor, schemaSql?: string): void {
   ensureColumn(db, "recurring_brief_plans", "last_failed_at", "DATETIME");
   ensureColumn(db, "recurring_brief_plans", "last_error_code", "TEXT");
   ensureColumn(db, "recurring_brief_plans", "last_error_message", "TEXT");
+  ensureColumn(db, "trends", "cluster_key", "TEXT");
   rebuildConnectorRequestsIfNeeded(db);
   db.run(`DROP INDEX IF EXISTS idx_engagement_messages_thread_external_message_id`);
   db.run(
@@ -110,6 +113,10 @@ export function applySchema(db: SqliteExecutor, schemaSql?: string): void {
     ON content_brief_evidence_items (brief_id, rank ASC)`,
   );
   db.run(
+    `CREATE INDEX IF NOT EXISTS idx_trends_workspace_cluster_key
+    ON trends (workspace_id, cluster_key)`,
+  );
+  db.run(
     `CREATE INDEX IF NOT EXISTS idx_source_documents_workspace_published_at
     ON source_documents (workspace_id, COALESCE(published_at, created_at) DESC)`,
   );
@@ -158,6 +165,10 @@ export function applySchema(db: SqliteExecutor, schemaSql?: string): void {
   );
   rebuildWorkerJobsIfNeeded(db);
   migrateLegacyContentBriefSourceScopes(db);
+  normalizeSourceDocumentPublishedAt(db);
+  normalizeTrendMetadata(db);
+  dedupeTrendRows(db);
+  sanitizeLegacyEngagementPolicies(db);
 }
 
 function ensureColumn(db: SqliteExecutor, tableName: string, columnName: string, columnDefinition: string): void {
@@ -216,6 +227,107 @@ function rebuildConnectorRequestsIfNeeded(db: SqliteExecutor): void {
     `);
     tx.run(`DROP TABLE connector_requests_legacy`);
   });
+}
+
+function normalizeSourceDocumentPublishedAt(db: SqliteExecutor): void {
+  const rows = db.all<{ id: string; published_at?: string | null }>(
+    `SELECT id, published_at FROM source_documents WHERE published_at IS NOT NULL AND published_at != ''`,
+  );
+
+  for (const row of rows) {
+    const normalized = normalizePublishedAt(row.published_at ?? undefined);
+    if (!normalized || normalized === row.published_at) {
+      continue;
+    }
+
+    db.run(`UPDATE source_documents SET published_at = ? WHERE id = ?`, [normalized, row.id]);
+  }
+}
+
+function normalizeTrendMetadata(db: SqliteExecutor): void {
+  const rows = db.all<{ id: string; topic: string; cluster_key?: string | null }>(
+    `SELECT id, topic, cluster_key FROM trends`,
+  );
+
+  for (const row of rows) {
+    const clusterKey = row.cluster_key?.trim() || normalizeTrendClusterKey(row.topic);
+    if (!clusterKey) {
+      continue;
+    }
+
+    const normalizedTopic = row.topic.replace(/\s+/g, " ").trim();
+    const nextTopic = shouldRepairTrendTopic(normalizedTopic, clusterKey)
+      ? formatTrendDisplayTopic(clusterKey)
+      : normalizedTopic;
+
+    if (clusterKey === (row.cluster_key ?? "").trim() && nextTopic === normalizedTopic) {
+      continue;
+    }
+
+    db.run(`UPDATE trends SET cluster_key = ?, topic = ? WHERE id = ?`, [clusterKey, nextTopic, row.id]);
+  }
+}
+
+function dedupeTrendRows(db: SqliteExecutor): void {
+  const rows = db.all<{
+    id: string;
+    workspace_id: string;
+    cluster_key?: string | null;
+    topic: string;
+    status: "active" | "cooling" | "archived";
+    score: number;
+    updated_at: string;
+  }>(
+    `SELECT id, workspace_id, cluster_key, topic, status, score, updated_at
+    FROM trends
+    ORDER BY
+      workspace_id ASC,
+      cluster_key ASC,
+      CASE status
+        WHEN 'active' THEN 2
+        WHEN 'cooling' THEN 1
+        ELSE 0
+      END DESC,
+      score DESC,
+      updated_at DESC,
+      id DESC`,
+  );
+
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    const clusterKey = row.cluster_key?.trim() || normalizeTrendClusterKey(row.topic);
+    if (!clusterKey) {
+      continue;
+    }
+
+    const dedupeKey = `${row.workspace_id}:${clusterKey}`;
+    if (!seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      if (clusterKey !== (row.cluster_key ?? "").trim()) {
+        db.run(`UPDATE trends SET cluster_key = ? WHERE id = ?`, [clusterKey, row.id]);
+      }
+      continue;
+    }
+
+    if (row.status !== "archived" || clusterKey !== (row.cluster_key ?? "").trim()) {
+      db.run(`UPDATE trends SET cluster_key = ?, status = 'archived' WHERE id = ?`, [clusterKey, row.id]);
+    }
+  }
+}
+
+function normalizePublishedAt(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  if (!Number.isFinite(timestamp)) {
+    return trimmed;
+  }
+
+  return new Date(timestamp).toISOString();
 }
 
 function rebuildWorkerJobsIfNeeded(db: SqliteExecutor): void {
@@ -397,4 +509,59 @@ function extractStringArray(value: unknown): string[] {
 
 function extractOptionalString(value: unknown): string[] {
   return typeof value === "string" && value.trim() !== "" ? [value.trim()] : [];
+}
+
+function sanitizeLegacyEngagementPolicies(db: SqliteExecutor): void {
+  const rows = db.all<{
+    account_id: string;
+    account_handle: string;
+    policy_body: string;
+    updated_at: string;
+  }>(
+    `SELECT ep.account_id, ep.policy_body, ep.updated_at, a.handle AS account_handle
+    FROM engagement_policies ep
+    INNER JOIN accounts a ON a.id = ep.account_id`,
+  );
+
+  const updates = rows.flatMap((row) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.policy_body);
+    } catch {
+      return [];
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return [];
+    }
+
+    const sanitized = sanitizeLegacyEngagementAutomationTargets(
+      parsed as import("../../modules/engagement/domain/engagement-policy").EngagementPolicyRule,
+      row.account_handle,
+    );
+    if (!sanitized.changed) {
+      return [];
+    }
+
+    return [{
+      account_id: row.account_id,
+      policy_body: JSON.stringify(sanitized.policy_body),
+      updated_at: new Date().toISOString(),
+    }];
+  });
+
+  if (updates.length === 0) {
+    return;
+  }
+
+  db.transaction((tx) => {
+    for (const update of updates) {
+      tx.run(
+        `UPDATE engagement_policies
+        SET policy_body = ?, updated_at = ?
+        WHERE account_id = ?`,
+        [update.policy_body, update.updated_at, update.account_id],
+      );
+    }
+  });
 }

@@ -5,6 +5,7 @@ function isProtectedPath(pathname: string): boolean {
   return pathname === "/dashboard"
     || pathname === "/calendar"
     || pathname === "/drafts"
+    || pathname === "/ai-bd"
     || pathname === "/monitoring"
     || pathname === "/settings"
     || pathname === "/accounts"

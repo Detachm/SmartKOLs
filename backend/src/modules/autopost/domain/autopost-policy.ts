@@ -12,6 +12,7 @@ export type AutopostPolicyLastRunStatus = "succeeded" | "failed";
 export type AutopostWeekdayCode = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type AutopostGenerationMode = "from_trend" | "from_source_scope";
 export type AutopostDraftReviewMode = "manual" | "auto_approve";
+export const DEFAULT_MAX_PENDING_MANUAL_REVIEW_DRAFTS = 5;
 
 export interface AutopostCadence {
   timezone: string;
@@ -29,6 +30,7 @@ export interface AutopostContentStrategy {
 export interface AutopostExecution {
   draft_review_mode: AutopostDraftReviewMode;
   auto_queue_publish: boolean;
+  max_pending_manual_review_drafts?: number;
 }
 
 export interface AutopostPolicy {
@@ -94,6 +96,12 @@ export function createAutopostPolicy(policy: AutopostPolicy): AutopostPolicy {
         ["manual", "auto_approve"] as const,
       ),
       auto_queue_publish: requireBoolean(policy.execution_body.auto_queue_publish, "execution_body.auto_queue_publish"),
+      max_pending_manual_review_drafts: requireIntegerInRange(
+        policy.execution_body.max_pending_manual_review_drafts ?? DEFAULT_MAX_PENDING_MANUAL_REVIEW_DRAFTS,
+        "execution_body.max_pending_manual_review_drafts",
+        1,
+        50,
+      ),
     },
     status: requireOneOf(policy.status, "status", ["active", "paused"] as const),
     next_run_after: optionalIsoDateTimeString(policy.next_run_after, "next_run_after"),

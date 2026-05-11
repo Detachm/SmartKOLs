@@ -1,5 +1,5 @@
 import type { SqliteExecutor } from "../../../infrastructure/db/sqlite-executor";
-import type { SourcesRepository } from "../application/ports/sources-repository";
+import type { SourceFetchCandidate, SourcesRepository } from "../application/ports/sources-repository";
 import type { Source } from "../domain/source";
 import type { SourceDocument } from "../domain/source-document";
 import type { SourceFetchRun } from "../domain/source-fetch-run";
@@ -35,6 +35,33 @@ export class SqliteSourcesRepository implements SourcesRepository {
       WHERE account_id = ?
       ORDER BY created_at DESC`,
       [accountId],
+    );
+  }
+
+  async listDueFetchCandidates(input: {
+    stale_before: string;
+    limit: number;
+  }): Promise<SourceFetchCandidate[]> {
+    return this.db.all<SourceFetchCandidate>(
+      `SELECT
+        s.id AS source_id,
+        s.workspace_id,
+        s.account_id,
+        s.last_fetched_at
+      FROM sources s
+      INNER JOIN accounts a ON a.id = s.account_id
+      WHERE s.status = 'active'
+        AND a.status = 'active'
+        AND (s.last_fetched_at IS NULL OR s.last_fetched_at <= ?)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM source_fetch_runs sfr
+          WHERE sfr.source_id = s.id
+            AND sfr.status IN ('queued', 'running')
+        )
+      ORDER BY COALESCE(s.last_fetched_at, s.created_at) ASC, s.id ASC
+      LIMIT ?`,
+      [input.stale_before, input.limit],
     );
   }
 

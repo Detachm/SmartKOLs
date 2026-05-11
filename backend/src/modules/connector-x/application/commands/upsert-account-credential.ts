@@ -54,7 +54,25 @@ export class UpsertAccountCredential {
     input: UpsertAccountCredentialRequest,
     now: string,
   ): Promise<string> {
-    if (input.provider !== "x_oauth2") {
+    if (input.provider === "x_oauth1") {
+      if ("oauth1_token" in input) {
+        return this.deps.secretStore.upsertOAuth1Secret(existingSecretRef, {
+          access_token: input.oauth1_token.access_token.trim(),
+          access_token_secret: input.oauth1_token.access_token_secret.trim(),
+        });
+      }
+
+      await this.deps.secretStore.deleteManagedSecret(existingSecretRef);
+      return input.secret_ref;
+    }
+
+    if (input.provider === "api_key") {
+      if ("api_key_token" in input) {
+        return this.deps.secretStore.upsertApiKeySecret(existingSecretRef, {
+          bearer_token: input.api_key_token.bearer_token.trim(),
+        });
+      }
+
       await this.deps.secretStore.deleteManagedSecret(existingSecretRef);
       return input.secret_ref;
     }

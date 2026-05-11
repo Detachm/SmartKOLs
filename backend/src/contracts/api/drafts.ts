@@ -1,6 +1,6 @@
 import type { DraftReview } from "../../modules/drafts/domain/draft";
 import type { DraftVersion } from "../../modules/drafts/domain/draft-version";
-import type { PublishScheduleResponse } from "./schedules";
+import type { PublishJobResponse, PublishScheduleResponse } from "./schedules";
 
 export interface DraftResponse {
   id: string;
@@ -26,6 +26,7 @@ export interface GenerateDraftRequest {
   topic?: string;
   trend_id?: string;
   content_brief_id?: string;
+  preview_mode?: boolean;
 }
 
 export interface GenerateDraftResponse {
@@ -74,6 +75,7 @@ export interface DraftListItem {
   current_version?: DraftVersion;
   latest_review?: DraftReview;
   schedule?: PublishScheduleResponse;
+  latest_publish_job?: PublishJobResponse;
 }
 
 export interface DraftListResponse {

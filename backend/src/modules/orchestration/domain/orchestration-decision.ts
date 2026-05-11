@@ -6,6 +6,9 @@ export type OrchestrationDecisionType =
   | "brief.generate.from_recurring_plan"
   | "engagement.classify"
   | "engagement.reply.generate"
+  | "engagement.follow.execute"
+  | "engagement.repost.execute"
+  | "engagement.comment.execute"
   | "autopost.execute_policy"
   | "autopost.generate_draft_from_run"
   | "autopost.finalize_run";
@@ -69,6 +72,7 @@ export interface EngagementReplyGenerateAction {
   type: "engagement.reply.generate";
   account_id: string;
   thread_id: string;
+  preferred_style?: string;
   rationale: string;
   priority_score: number;
 }
@@ -77,6 +81,27 @@ export interface EngagementClassifyAction {
   type: "engagement.classify";
   account_id: string;
   thread_id: string;
+  rationale: string;
+  priority_score: number;
+}
+
+export interface EngagementFollowExecuteAction {
+  type: "engagement.follow.execute";
+  account_id: string;
+  rationale: string;
+  priority_score: number;
+}
+
+export interface EngagementRepostExecuteAction {
+  type: "engagement.repost.execute";
+  account_id: string;
+  rationale: string;
+  priority_score: number;
+}
+
+export interface EngagementCommentExecuteAction {
+  type: "engagement.comment.execute";
+  account_id: string;
   rationale: string;
   priority_score: number;
 }
@@ -93,6 +118,9 @@ export type EligibleOrchestrationAction =
   | BriefGenerateFromRecurringPlanAction
   | EngagementClassifyAction
   | EngagementReplyGenerateAction
+  | EngagementFollowExecuteAction
+  | EngagementRepostExecuteAction
+  | EngagementCommentExecuteAction
   | AutopostExecutePolicyAction
   | AutopostGenerateDraftFromRunAction
   | AutopostFinalizeRunAction;
@@ -165,6 +193,9 @@ export function createEngagementReplyGenerateAction(
     type: "engagement.reply.generate",
     account_id: requireNonEmptyString(input.account_id, "account_id"),
     thread_id: requireNonEmptyString(input.thread_id, "thread_id"),
+    preferred_style: typeof input.preferred_style === "string" && input.preferred_style.trim() !== ""
+      ? input.preferred_style.trim()
+      : undefined,
     rationale: requireNonEmptyString(input.rationale, "rationale"),
     priority_score: requireIntegerInRange(input.priority_score, "priority_score", 0, 10_000),
   };
@@ -177,6 +208,39 @@ export function createEngagementClassifyAction(
     type: "engagement.classify",
     account_id: requireNonEmptyString(input.account_id, "account_id"),
     thread_id: requireNonEmptyString(input.thread_id, "thread_id"),
+    rationale: requireNonEmptyString(input.rationale, "rationale"),
+    priority_score: requireIntegerInRange(input.priority_score, "priority_score", 0, 10_000),
+  };
+}
+
+export function createEngagementFollowExecuteAction(
+  input: EngagementFollowExecuteAction,
+): EngagementFollowExecuteAction {
+  return {
+    type: "engagement.follow.execute",
+    account_id: requireNonEmptyString(input.account_id, "account_id"),
+    rationale: requireNonEmptyString(input.rationale, "rationale"),
+    priority_score: requireIntegerInRange(input.priority_score, "priority_score", 0, 10_000),
+  };
+}
+
+export function createEngagementRepostExecuteAction(
+  input: EngagementRepostExecuteAction,
+): EngagementRepostExecuteAction {
+  return {
+    type: "engagement.repost.execute",
+    account_id: requireNonEmptyString(input.account_id, "account_id"),
+    rationale: requireNonEmptyString(input.rationale, "rationale"),
+    priority_score: requireIntegerInRange(input.priority_score, "priority_score", 0, 10_000),
+  };
+}
+
+export function createEngagementCommentExecuteAction(
+  input: EngagementCommentExecuteAction,
+): EngagementCommentExecuteAction {
+  return {
+    type: "engagement.comment.execute",
+    account_id: requireNonEmptyString(input.account_id, "account_id"),
     rationale: requireNonEmptyString(input.rationale, "rationale"),
     priority_score: requireIntegerInRange(input.priority_score, "priority_score", 0, 10_000),
   };

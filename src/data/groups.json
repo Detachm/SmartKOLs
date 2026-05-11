@@ -1,7 +1,0 @@
-[
-  { "id": "grp_001", "name": "加密KOL组", "color": "#C8922A" },
-  { "id": "grp_002", "name": "科技KOL组", "color": "#4A9EDB" },
-  { "id": "grp_003", "name": "AI KOL组",  "color": "#4CAF7D" },
-  { "id": "grp_004", "name": "财经KOL组", "color": "#E05252" },
-  { "id": "grp_005", "name": "网红博主组", "color": "#9B59B6" }
-]

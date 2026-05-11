@@ -5,7 +5,6 @@ import { useParams } from "next/navigation";
 import {
   createSource,
   deleteSourceWatchlist,
-  executeSourceFetchRun,
   fetchSource,
   listAccountSourceDocuments,
   listSourceFetchRuns,
@@ -41,6 +40,8 @@ import {
   ListFilter,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { notifyAccountReadinessChanged } from "@/lib/account-readiness-refresh";
+import { translateAutomationErrorMessage } from "@/lib/account-automation-ui";
 
 const SOURCE_TYPE_ICONS: Record<string, React.ReactNode> = {
   rss: <Rss className="w-4 h-4" />,
@@ -190,6 +191,7 @@ export default function SourcesPage() {
 
   async function reloadAfterAction(preferSourceId?: string | null) {
     await loadAll(preferSourceId);
+    notifyAccountReadinessChanged(id);
   }
 
   async function handleAddSource(payload: { name: string; url: string; type: BackendSource["type"] }) {
@@ -227,7 +229,7 @@ export default function SourcesPage() {
   async function handleFetch(sourceId: string) {
     setSubmitting(true);
     try {
-      await fetchSource(sourceId);
+      await fetchSource(sourceId, { executeNow: true });
       await reloadAfterAction(sourceId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "发起抓取失败");
@@ -243,18 +245,6 @@ export default function SourcesPage() {
       await reloadAfterAction(sourceId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "重试抓取失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleExecuteRun(runId: string, sourceId: string) {
-    setSubmitting(true);
-    try {
-      await executeSourceFetchRun(runId);
-      await reloadAfterAction(sourceId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "执行抓取失败");
     } finally {
       setSubmitting(false);
     }
@@ -447,7 +437,7 @@ export default function SourcesPage() {
                       {latestRun && (
                         <div className="mt-3 rounded-lg bg-[#F7F7F7] px-3 py-2 text-[11px] text-[#666666]">
                           最近运行：{latestRun.status} · {formatTime(latestRun.started_at)}
-                          {latestRun.error_message ? ` · ${latestRun.error_message}` : ""}
+                          {latestRun.error_message ? ` · ${translateAutomationErrorMessage(latestRun.error_message) ?? latestRun.error_message}` : ""}
                         </div>
                       )}
                     </div>
@@ -532,15 +522,10 @@ export default function SourcesPage() {
                           开始于 {formatTime(run.started_at)} · 抓取 {run.fetched_count} 条
                         </p>
                         {run.error_message && (
-                          <p className="text-xs text-[#B04A4A] mt-1">{run.error_message}</p>
+                          <p className="text-xs text-[#B04A4A] mt-1">{translateAutomationErrorMessage(run.error_message) ?? run.error_message}</p>
                         )}
                       </div>
                       <div className="flex gap-2">
-                        {run.status === "queued" && (
-                          <Button size="sm" variant="outline" onClick={() => void handleExecuteRun(run.id, selectedSource.id)}>
-                            执行
-                          </Button>
-                        )}
                         {run.status === "failed" && (
                           <Button size="sm" variant="outline" onClick={() => void handleRetryRun(run.id, selectedSource.id)}>
                             重试

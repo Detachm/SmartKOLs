@@ -75,6 +75,9 @@ export class GetMonitoringOverview {
       }),
     ]);
 
+    const actionableSystemFailuresByKind = countActionableSystemFailuresByKind(operatorQueues);
+    const actionableSystemFailureCount = Array.from(actionableSystemFailuresByKind.values()).reduce((sum, count) => sum + count, 0);
+    const scopedOperations = scopeOperationsToOperatorQueue(operations, operatorQueueSummary, actionableSystemFailuresByKind);
     const feed = [
       ...alerts.map((alert) => ({
         id: alert.id,
@@ -118,9 +121,9 @@ export class GetMonitoringOverview {
             || item.model_request?.status === "invalid_output";
         }).length,
         audit_items: auditLogs.length,
-        operations_health_status: operations.summary.health_status,
-        stale_processes: operations.summary.stale_processes,
-        failed_queue_items: operatorQueueSummary.reduce((sum, item) => sum + item.failed_count, 0),
+        operations_health_status: scopedOperations.summary.health_status,
+        stale_processes: scopedOperations.summary.stale_processes,
+        failed_queue_items: actionableSystemFailureCount,
       },
       feed,
       notifications,
@@ -131,7 +134,80 @@ export class GetMonitoringOverview {
       operator_queues: operatorQueues,
       alert_channels: alertChannels,
       audit_logs: auditLogs,
-      operations,
+      operations: scopedOperations,
     };
   }
+}
+
+function scopeOperationsToOperatorQueue(
+  operations: OperationsOverviewResponse,
+  operatorQueueSummary: MonitoringOperatorQueueKindSummary[],
+  actionableSystemFailuresByKind: Map<MonitoringOperatorQueueItem["kind"], number>,
+): OperationsOverviewResponse {
+  const queueMetrics = operations.queue_metrics.map((metric) => {
+    const summary = operatorQueueSummary.find((item) => item.kind === metric.kind);
+    if (!summary) {
+      return metric;
+    }
+
+    return {
+      ...metric,
+      queued_count: summary.queued_count,
+      running_count: summary.running_count,
+      failed_count: actionableSystemFailuresByKind.get(metric.kind) ?? 0,
+      oldest_queued_at: summary.oldest_queued_at,
+      oldest_running_started_at: summary.oldest_running_started_at,
+    };
+  });
+  const queuedJobs = queueMetrics.reduce((sum, item) => sum + item.queued_count, 0);
+  const runningJobs = queueMetrics.reduce((sum, item) => sum + item.running_count, 0);
+  const failedJobs = queueMetrics.reduce((sum, item) => sum + item.failed_count, 0);
+  const healthStatus = operations.summary.active_http_servers === 0 || operations.summary.active_workers === 0 || operations.summary.stale_processes > 0
+    ? "unhealthy"
+    : failedJobs > 0 || operations.summary.recent_critical_events > 0
+      ? "degraded"
+      : "healthy";
+  const reasons = [
+    ...(operations.summary.active_http_servers === 0 ? ["no running http_server heartbeat found"] : []),
+    ...(operations.summary.active_workers === 0 ? ["no running worker heartbeat found"] : []),
+    ...(operations.summary.stale_processes > 0 ? [`${operations.summary.stale_processes} runtime process heartbeats are stale`] : []),
+    ...(failedJobs > 0 ? [`${failedJobs} current workspace system failures require attention`] : []),
+    ...(operations.summary.recent_critical_events > 0 ? [`${operations.summary.recent_critical_events} recent critical runtime events were recorded`] : []),
+  ];
+
+  return {
+    ...operations,
+    summary: {
+      ...operations.summary,
+      health_status: healthStatus,
+      reasons,
+      queued_jobs: queuedJobs,
+      running_jobs: runningJobs,
+      failed_jobs: failedJobs,
+    },
+    queue_metrics: queueMetrics,
+  };
+}
+
+function countActionableSystemFailuresByKind(items: MonitoringOperatorQueueItem[]): Map<MonitoringOperatorQueueItem["kind"], number> {
+  const operatorBacklogKinds = new Set<MonitoringOperatorQueueItem["kind"]>(["account_readiness", "draft_review", "reply_review"]);
+  const counts = new Map<MonitoringOperatorQueueItem["kind"], number>();
+  for (const item of items) {
+    if (operatorBacklogKinds.has(item.kind) || item.status !== "failed") {
+      continue;
+    }
+
+    let actionable = false;
+    if (item.error_category) {
+      actionable = ["temporary_external_error", "rate_limited", "system_failure"].includes(item.error_category);
+    } else {
+      actionable = item.retry_supported === true && item.auto_retry_recommended === true;
+    }
+
+    if (actionable) {
+      counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+    }
+  }
+
+  return counts;
 }

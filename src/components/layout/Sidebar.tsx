@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Bell, Settings, CalendarDays, FileText, Search } from "lucide-react";
+import { LayoutDashboard, Users, Bell, Settings, CalendarDays, FileText, Search, Radar } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useMockStore } from "@/lib/mock-store";
+import { getAppChromeOverview, type AppChromeOverviewResponse } from "@/lib/live-api";
+import { getLiveSession } from "@/lib/session-client";
 import NotificationBell from "./NotificationBell";
 import CommandPalette from "./CommandPalette";
 
@@ -14,15 +15,17 @@ const navItems = [
   { label: "账号管理", href: "/accounts", icon: Users },
   { label: "内容日历", href: "/calendar", icon: CalendarDays },
   { label: "内容审核", href: "/drafts", icon: FileText },
+  { label: "AI BD", href: "/ai-bd", icon: Radar },
   { label: "监控中心", href: "/monitoring", icon: Bell },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { drafts } = useMockStore();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [chrome, setChrome] = useState<AppChromeOverviewResponse | null>(null);
 
-  const pendingDrafts = drafts.filter((d) => d.status === "pending").length;
+  const pendingDrafts = chrome?.summary.pending_drafts ?? 0;
+  const unreadNotifications = chrome?.summary.unread_notifications ?? 0;
 
   // Cmd+K / Ctrl+K shortcut
   useEffect(() => {
@@ -35,6 +38,35 @@ export default function Sidebar() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadChrome() {
+      try {
+        const session = await getLiveSession();
+        const overview = await getAppChromeOverview(session.selected_workspace.id, {
+          notificationLimit: 8,
+          groupLimit: 8,
+        });
+        if (!cancelled) {
+          setChrome(overview);
+        }
+      } catch {
+        if (!cancelled) {
+          setChrome(null);
+        }
+      }
+    }
+
+    if (pathname !== "/login") {
+      void loadChrome();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
 
   // Hide sidebar on login page
   if (pathname === "/login") return null;
@@ -86,14 +118,16 @@ export default function Sidebar() {
                     {pendingDrafts}
                   </span>
                 )}
-                {href === "/monitoring" && (
-                  <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#E05252]" />
+                {href === "/monitoring" && unreadNotifications > 0 && (
+                  <span className="ml-auto min-w-[18px] h-[18px] rounded-full bg-[#E05252] text-white text-[10px] font-bold flex items-center justify-center px-1">
+                    {unreadNotifications}
+                  </span>
                 )}
               </Link>
             );
           })}
           <div className="pt-2">
-            <NotificationBell />
+            <NotificationBell notifications={chrome?.recent_notifications ?? []} unreadCount={unreadNotifications} />
           </div>
         </nav>
 

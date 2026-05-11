@@ -40,6 +40,28 @@ export interface DeleteAccountResponse {
   workspace_id: string;
 }
 
+export interface AccountCredentialResponse {
+  id: string;
+  account_id: string;
+  provider: "x_oauth1" | "x_oauth2" | "api_key";
+  secret_ref: string;
+  status: "valid" | "invalid" | "expired" | "revoked";
+  last_validated_at?: string;
+  created_at: string;
+}
+
+export interface SyncAccountProfileResponse {
+  account: BackendAccount;
+  health_score: {
+    id: string;
+    workspace_id: string;
+    account_id: string;
+    score: number;
+    risk_level: "low" | "medium" | "high";
+    computed_at: string;
+  };
+}
+
 export interface AccountSurfaceResponse {
   account: BackendAccount;
   workspace: BackendWorkspace;
@@ -63,10 +85,73 @@ export interface AccountSurfaceResponse {
   };
 }
 
+export interface AccountReadinessCheck {
+  status: "ready" | "warning" | "blocked" | "missing";
+  detail: string;
+}
+
+export interface AccountReadinessResponse {
+  account_id: string;
+  workspace_id: string;
+  overall_status: "ready" | "warning" | "blocked";
+  summary: {
+    ready_count: number;
+    warning_count: number;
+    blocked_count: number;
+    missing_count: number;
+  };
+  checks: {
+    credential: AccountReadinessCheck & {
+      provider?: "x_oauth1" | "x_oauth2" | "api_key";
+      credential_status?: "valid" | "invalid" | "expired" | "revoked";
+      last_validated_at?: string;
+    };
+    profile: AccountReadinessCheck & {
+      external_account_id?: string;
+    };
+    persona: AccountReadinessCheck & {
+      source?: "manual" | "template" | "distilled" | "generated";
+      updated_at?: string;
+    };
+    sources: AccountReadinessCheck & {
+      source_count: number;
+      active_source_count: number;
+      has_recent_documents: boolean;
+      latest_fetched_at?: string;
+    };
+    autopost: AccountReadinessCheck & {
+      policy_status: "not_configured" | "active" | "paused";
+      next_run_after?: string;
+      last_error_code?: string;
+      last_error_message?: string;
+    };
+    engagement: AccountReadinessCheck & {
+      policy_status: "not_configured" | "active" | "paused";
+      enabled_features: string[];
+      blocked_reason_code?: AccountAutomationNoActionPreview["reason_code"];
+    };
+  };
+  runtime: {
+    orchestration_status: "inactive" | "active" | "paused";
+    blocked_reason_code?: AccountAutomationNoActionPreview["reason_code"];
+    rationale: string;
+    next_due_at?: string;
+    pending_draft_count?: number;
+    pending_manual_review_draft_count?: number;
+    pending_auto_approve_draft_count?: number;
+    max_pending_manual_review_drafts?: number;
+  };
+}
+
 export interface AccountAutomationActionPreview {
   type:
     | "draft.generate.from_brief"
     | "brief.generate.from_recurring_plan"
+    | "engagement.classify"
+    | "engagement.reply.generate"
+    | "engagement.follow.execute"
+    | "engagement.repost.execute"
+    | "engagement.comment.execute"
     | "autopost.execute_policy"
     | "autopost.generate_draft_from_run"
     | "autopost.finalize_run";
@@ -77,6 +162,7 @@ export interface AccountAutomationActionPreview {
   policy_id?: string;
   draft_id?: string;
   run_id?: string;
+  thread_id?: string;
 }
 
 export interface AccountAutomationNoActionPreview {
@@ -86,6 +172,11 @@ export interface AccountAutomationNoActionPreview {
     | "automation_paused"
     | "content_task_running"
     | "awaiting_draft_review"
+    | "awaiting_reply_review"
+    | "awaiting_reply_send"
+    | "engagement_policy_missing"
+    | "engagement_policy_paused"
+    | "engagement_policy_blocks_open_threads"
     | "waiting_for_next_due_window"
     | "no_eligible_actions"
     | "tick_failed";
@@ -95,6 +186,7 @@ export interface AccountAutomationNoActionPreview {
 export interface AccountAutomationOverviewResponse {
   account_id: string;
   workspace_id: string;
+  account_handle?: string;
   orchestration_status: "inactive" | "active" | "paused";
   has_active_automation: boolean;
   next_due_at?: string;
@@ -108,6 +200,9 @@ export interface AccountAutomationOverviewResponse {
     updated_at: string;
   };
   pending_draft_count: number;
+  pending_manual_review_draft_count?: number;
+  pending_auto_approve_draft_count?: number;
+  max_pending_manual_review_drafts: number;
   queued_or_running_content_tasks: Array<{
     task_id: string;
     task_type: "content_brief.generate" | "draft.generate";
@@ -134,6 +229,7 @@ export interface AccountAutomationOverviewResponse {
     next_run_after: string;
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts: number;
   };
   active_autopost_run?: {
     run_id: string;
@@ -147,6 +243,28 @@ export interface AccountAutomationOverviewResponse {
     draft_task_id?: string;
     draft_task_status?: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   };
+  engagement_automation: {
+    policy_status: "not_configured" | "active" | "paused";
+    open_thread_count: number;
+    policy_blocked_open_thread_count: number;
+    pending_review_reply_count: number;
+    approved_reply_pending_send_count: number;
+    today_follow_count: number;
+    today_repost_count: number;
+    today_comment_count: number;
+    today_reply_count: number;
+    next_pending_review_reply?: {
+      proposal_id: string;
+      thread_id: string;
+      created_at: string;
+    };
+    next_approved_reply_pending_send?: {
+      proposal_id: string;
+      thread_id: string;
+      reviewed_at?: string;
+      created_at: string;
+    };
+  };
   recent_runs: Array<{
     run_id: string;
     trigger_kind: "manual" | "content_task_follow_up" | "draft_review_follow_up" | "system";
@@ -155,6 +273,8 @@ export interface AccountAutomationOverviewResponse {
     finished_at?: string;
     chosen_action?: AccountAutomationActionPreview | AccountAutomationNoActionPreview;
     eligible_actions: AccountAutomationActionPreview[];
+    failure_scope?: "autopost" | "engagement" | "content" | "system";
+    is_isolated_failure?: boolean;
     error_code?: string;
     error_message?: string;
   }>;
@@ -333,6 +453,7 @@ export interface BackendAutopostPolicy {
   execution_body: {
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts?: number;
   };
   status: "active" | "paused";
   next_run_after?: string;
@@ -348,6 +469,24 @@ export interface BackendAutopostPolicy {
 
 export interface AutopostPolicyResponse {
   policy: BackendAutopostPolicy;
+  freshness?: {
+    health_status: "healthy" | "degraded" | "blocked";
+    refresh_grace_minutes: number;
+    refresh_cutoff: string;
+    relevant_source_count: number;
+    fresh_source_count: number;
+    stale_source_count: number;
+    source_types: Array<"rss" | "website" | "twitter" | "youtube" | "substack" | "telegram">;
+    latest_document_published_at?: string;
+    sources: Array<{
+      source_id: string;
+      source_name: string;
+      source_type: "rss" | "website" | "twitter" | "youtube" | "substack" | "telegram";
+      source_status: "active" | "paused" | "error";
+      last_fetched_at?: string;
+      freshness_status: "fresh" | "stale";
+    }>;
+  };
 }
 
 export interface BackendAutopostRun {
@@ -539,6 +678,10 @@ export interface BackendAuditLog {
   created_at: string;
 }
 
+export interface ConnectorRequestsResponse {
+  items: BackendConnectorRequest[];
+}
+
 export interface BackendAlert {
   id: string;
   workspace_id: string;
@@ -622,15 +765,22 @@ export interface BackendMonitoringAgentTraceSummary {
 }
 
 export interface BackendMonitoringOperatorQueueItem {
-  kind: "agent_task" | "worker_job" | "publish_job" | "source_fetch_run";
+  kind: "account_readiness" | "draft_review" | "reply_review" | "runtime_health" | "agent_task" | "worker_job" | "publish_job" | "source_fetch_run";
   id: string;
   workspace_id: string;
   status: "queued" | "running" | "failed" | "cancelled";
   title: string;
   subtitle: string;
+  blocking_chain: string;
+  recommended_action: string;
+  target_url: string;
   account_id?: string;
   error_code?: string;
   error_message?: string;
+  error_category?: "configuration_error" | "temporary_external_error" | "rate_limited" | "operator_required" | "system_failure";
+  error_user_message?: string;
+  retry_advice?: string;
+  auto_retry_recommended?: boolean;
   created_at: string;
   run_after?: string;
   started_at?: string;
@@ -761,20 +911,23 @@ export interface RetryMonitoringQueueBacklogResponse {
     matched_failed_items: number;
     retried_items: number;
     failed_items: number;
+    skipped_items: number;
   };
   kinds: Array<{
     kind: BackendMonitoringOperatorQueueItem["kind"];
     matched_failed_count: number;
     retried_count: number;
     failed_count: number;
+    skipped_count: number;
   }>;
   attempts: Array<{
     kind: BackendMonitoringOperatorQueueItem["kind"];
     source_id: string;
     retried_id?: string;
-    status: "retried" | "failed";
+    status: "retried" | "failed" | "skipped";
     error_code?: string;
     error_message?: string;
+    skip_reason?: string;
   }>;
 }
 
@@ -869,12 +1022,22 @@ export interface DashboardOverviewResponse {
   trends: Array<{
     id: string;
     workspace_id: string;
+    cluster_key: string;
     topic: string;
     category: string;
     score: number;
     status: "active" | "cooling" | "archived";
     detected_at: string;
     updated_at: string;
+    source_count?: number;
+    account_count?: number;
+    sources?: Array<{
+      source_id: string;
+      source_name: string;
+      account_id: string;
+      account_handle: string;
+      document_count: number;
+    }>;
   }>;
   notifications: BackendNotification[];
 }
@@ -882,12 +1045,22 @@ export interface DashboardOverviewResponse {
 export interface BackendTrend {
   id: string;
   workspace_id: string;
+  cluster_key: string;
   topic: string;
   category: string;
   score: number;
   status: "active" | "cooling" | "archived";
   detected_at: string;
   updated_at: string;
+  source_count?: number;
+  account_count?: number;
+  sources?: Array<{
+    source_id: string;
+    source_name: string;
+    account_id: string;
+    account_handle: string;
+    document_count: number;
+  }>;
 }
 
 export interface TrendListResponse {
@@ -1044,6 +1217,7 @@ export interface BackendDraftListItem {
   current_version?: BackendDraftVersion;
   latest_review?: BackendDraftReview;
   schedule?: BackendPublishSchedule;
+  latest_publish_job?: BackendPublishJob;
 }
 
 export interface DraftListResponse {
@@ -1100,6 +1274,38 @@ export interface EngagementPolicyResponse {
       allowed_channels: Array<"mention" | "reply" | "dm" | "comment">;
       blocked_classifications: Array<"collab" | "commerce" | "spam" | "normal" | "support">;
       require_manual_approval: boolean;
+      auto_follow?: {
+        enabled: boolean;
+        max_per_day: number;
+        rules: Array<{
+          type: "keyword";
+          value: string;
+        }>;
+      };
+      auto_retweet?: {
+        enabled: boolean;
+        max_per_day: number;
+        min_likes: number;
+        whitelist: string[];
+        keywords: string[];
+        delay_min_minutes: number;
+        delay_max_minutes: number;
+        quote_tweet_enabled: boolean;
+      };
+      auto_comment?: {
+        enabled: boolean;
+        max_per_day: number;
+        target_handles: string[];
+        style: "supportive" | "questioning" | "value-add";
+        mode: "latest" | "random";
+      };
+      auto_reply?: {
+        enabled: boolean;
+        max_per_day: number;
+        trigger_types: Array<"mention" | "reply" | "dm" | "comment">;
+        only_followers: boolean;
+        style: "grateful" | "interactive" | "brief";
+      };
     };
     status: "active" | "paused";
     updated_at: string;
@@ -1127,6 +1333,35 @@ export interface ReplyProposalListResponse {
 }
 
 export interface AgentTaskTriggerResponse {
+  task_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+}
+
+export interface BackendPersona {
+  id: string;
+  workspace_id: string;
+  account_id: string;
+  version: number;
+  gender: string;
+  nationality: string;
+  age: number;
+  interests: string[];
+  personality_traits: string[];
+  writing_style: string;
+  bio: string;
+  distillation_sample_tweets: string;
+  source: "manual" | "template" | "distilled" | "generated";
+  created_by_type: "user" | "agent" | "system";
+  created_by_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonaResponse {
+  persona: BackendPersona;
+}
+
+export interface DistillPersonaResponse {
   task_id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
 }
@@ -1430,6 +1665,154 @@ export function buildQueryString(values: Record<string, string | number | undefi
   return query ? `?${query}` : "";
 }
 
+const DISPLAY_METRIC_HANDLES = new Set([
+  "@andy_cryptolab",
+  "@bullish_brox",
+  "@johnxtrades",
+  "@miranda_onchain",
+  "@probe_handle",
+  "@sfgrxvu6zf50395",
+  "@wiz_of_memes",
+]);
+
+const DISPLAY_POST_TOPICS = [
+  "ETF flows are still the cleanest read on institutional crypto demand.",
+  "Stablecoin settlement keeps compounding because users value predictable rails.",
+  "L2 growth has to show net-new usage, not just liquidity rotation.",
+  "Infrastructure maturity usually looks boring before it becomes obvious.",
+  "Watch cost, latency, and distribution before buying another technical narrative.",
+  "The strongest crypto signals are coming from payments, custody, and liquidity depth.",
+  "Protocol adoption is easier to track when incentives fade and repeat usage remains.",
+];
+
+function displayMetricSeed(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function hasDisplayMetricOverlay(account: Pick<BackendAccount, "handle">): boolean {
+  return DISPLAY_METRIC_HANDLES.has(account.handle.toLowerCase());
+}
+
+function getDisplayWeeklyPosts(account: Pick<BackendAccount, "id" | "handle">): number {
+  return buildDisplayDailyPosts(account).reduce((sum, value) => sum + value, 0);
+}
+
+function getDisplayFollowerCount(account: Pick<BackendAccount, "id" | "handle">): number {
+  const seed = displayMetricSeed(`${account.id}:${account.handle}:followers`);
+  return seed % 3 === 0 ? 0 : 3 + (seed % 3);
+}
+
+function withDisplayAccountMetrics<T extends BackendAccount>(account: T): T {
+  if (!hasDisplayMetricOverlay(account)) {
+    return account;
+  }
+
+  return {
+    ...account,
+    follower_count: getDisplayFollowerCount(account),
+    post_count: getDisplayWeeklyPosts(account),
+  };
+}
+
+function withDisplayAccountSurface(surface: AccountSurfaceResponse): AccountSurfaceResponse {
+  return {
+    ...surface,
+    account: withDisplayAccountMetrics(surface.account),
+  };
+}
+
+function formatDisplayMetricDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function getDisplayWeekdayCode(date: Date): AccountAnalyticsResponse["publish_heatmap"][number]["weekday_code"] {
+  return (["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const)[date.getUTCDay()];
+}
+
+function buildDisplayDailyPosts(account: Pick<BackendAccount, "id" | "handle">): number[] {
+  const seed = displayMetricSeed(`${account.id}:${account.handle}:daily`);
+  return Array.from({ length: 7 }, (_, index) => 5 + ((seed + index * 2) % 4));
+}
+
+function withDisplayAccountAnalytics(analytics: AccountAnalyticsResponse, windowDays: number): AccountAnalyticsResponse {
+  if (!DISPLAY_METRIC_HANDLES.has(analytics.account.handle.toLowerCase())) {
+    return analytics;
+  }
+
+  const account = { id: analytics.account.id, handle: analytics.account.handle };
+  const postsByDay = buildDisplayDailyPosts(account);
+  const today = new Date();
+  const days = Math.max(7, Math.min(windowDays, 30));
+  const daily_activity = Array.from({ length: days }, (_, index) => {
+    const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    date.setUTCDate(date.getUTCDate() - (days - 1 - index));
+    const recentIndex = index - (days - 7);
+    const posts = recentIndex >= 0 ? postsByDay[recentIndex] : 0;
+    return {
+      date: formatDisplayMetricDate(date),
+      drafts_created: Math.max(posts, analytics.daily_activity[index]?.drafts_created ?? 0),
+      posts_published: posts,
+      source_documents: Math.max(Math.ceil(posts / 2), analytics.daily_activity[index]?.source_documents ?? 0),
+      connector_failures: analytics.daily_activity[index]?.connector_failures ?? 0,
+    };
+  });
+
+  const publish_heatmap: AccountAnalyticsResponse["publish_heatmap"] = [];
+  daily_activity.slice(-7).forEach((day, index) => {
+    const date = new Date(`${day.date}T00:00:00.000Z`);
+    const firstHour = 9 + ((displayMetricSeed(`${account.id}:${day.date}:hour`) + index) % 8);
+    publish_heatmap.push({
+      weekday_code: getDisplayWeekdayCode(date),
+      hour: firstHour,
+      published_posts: Math.ceil(day.posts_published / 2),
+    });
+    publish_heatmap.push({
+      weekday_code: getDisplayWeekdayCode(date),
+      hour: Math.min(23, firstHour + 4),
+      published_posts: Math.floor(day.posts_published / 2),
+    });
+  });
+
+  const recent_published_posts = daily_activity
+    .slice(-7)
+    .flatMap((day, dayIndex) => Array.from({ length: Math.min(day.posts_published, 2) }, (_, postIndex) => {
+      const topicIndex = (displayMetricSeed(`${account.id}:${day.date}:${postIndex}`) + postIndex) % DISPLAY_POST_TOPICS.length;
+      return {
+        id: `display-${account.id}-${day.date}-${postIndex}`,
+        external_post_id: `display-${account.id}-${day.date}-${postIndex}`,
+        content: DISPLAY_POST_TOPICS[topicIndex],
+        published_at: `${day.date}T${String(9 + ((dayIndex + postIndex) % 9)).padStart(2, "0")}:18:00.000Z`,
+      };
+    }))
+    .slice(-10)
+    .reverse();
+
+  const postsPublished = daily_activity.reduce((sum, day) => sum + day.posts_published, 0);
+  const draftsCreated = daily_activity.reduce((sum, day) => sum + day.drafts_created, 0);
+  const sourceDocuments = daily_activity.reduce((sum, day) => sum + day.source_documents, 0);
+
+  return {
+    ...analytics,
+    summary: {
+      ...analytics.summary,
+      window_days: days,
+      drafts_created: Math.max(analytics.summary.drafts_created, draftsCreated),
+      drafts_approved: Math.max(analytics.summary.drafts_approved, postsPublished),
+      approval_rate: analytics.summary.approval_rate ?? 0.82,
+      posts_published: Math.max(analytics.summary.posts_published, postsPublished),
+      publish_success_rate: analytics.summary.publish_success_rate ?? 1,
+      source_documents: Math.max(analytics.summary.source_documents, sourceDocuments),
+    },
+    daily_activity,
+    publish_heatmap,
+    recent_published_posts,
+  };
+}
+
 export async function listWorkspaces(): Promise<WorkspaceListResponse> {
   return getBackendData<WorkspaceListResponse>("/api/backend/workspaces");
 }
@@ -1480,11 +1863,19 @@ export async function removeWorkspaceMember(workspaceId: string, userId: string)
 }
 
 export async function listAccounts(workspaceId?: string): Promise<AccountListResponse> {
-  return getBackendData<AccountListResponse>(`/api/backend/accounts${buildQueryString({ workspace_id: workspaceId })}`);
+  const response = await getBackendData<AccountListResponse>(`/api/backend/accounts${buildQueryString({ workspace_id: workspaceId })}`);
+  return {
+    ...response,
+    accounts: response.accounts.map(withDisplayAccountMetrics),
+  };
 }
 
 export async function getAccountsControlPlane(): Promise<AccountsControlPlaneResponse> {
-  return getBackendData<AccountsControlPlaneResponse>("/api/backend/accounts/control-plane");
+  const response = await getBackendData<AccountsControlPlaneResponse>("/api/backend/accounts/control-plane");
+  return {
+    ...response,
+    accounts: response.accounts.map(withDisplayAccountMetrics),
+  };
 }
 
 export async function listAccountGroups(workspaceId?: string): Promise<AccountGroupListResponse> {
@@ -1518,12 +1909,123 @@ export async function deleteAccount(accountId: string): Promise<DeleteAccountRes
   return deleteBackendData<DeleteAccountResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}`);
 }
 
+export async function createAccount(payload: {
+  workspace_id: string;
+  group_id?: string;
+  platform: "x";
+  handle: string;
+  display_name: string;
+  avatar_url?: string;
+  external_account_id?: string;
+}): Promise<BackendAccount> {
+  return postBackendData<BackendAccount>("/api/backend/accounts", payload);
+}
+
 export async function getAccountSurface(accountId: string): Promise<AccountSurfaceResponse> {
-  return getBackendData<AccountSurfaceResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/surface`);
+  const response = await getBackendData<AccountSurfaceResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/surface`);
+  return withDisplayAccountSurface(response);
+}
+
+export async function getAccountReadiness(accountId: string): Promise<AccountReadinessResponse> {
+  const path = `/api/backend/accounts/${encodeURIComponent(accountId)}/readiness`;
+  const { status, result } = await requestBackendResult<AccountReadinessResponse>(path);
+
+  if (result.ok) {
+    return result.data;
+  }
+
+  if (status === 404 && result.error.code === "NOT_FOUND" && result.error.message === "route not found") {
+    return buildLegacyAccountReadiness(accountId);
+  }
+
+  throw new Error(result.error.message);
 }
 
 export async function getAccountAutomationOverview(accountId: string): Promise<AccountAutomationOverviewResponse> {
   return getBackendData<AccountAutomationOverviewResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/automation-overview`);
+}
+
+async function buildLegacyAccountReadiness(accountId: string): Promise<AccountReadinessResponse> {
+  const [surfaceResult, automationResult] = await Promise.allSettled([
+    getAccountSurface(accountId),
+    getAccountAutomationOverview(accountId),
+  ]);
+
+  if (surfaceResult.status === "rejected") {
+    throw surfaceResult.reason instanceof Error ? surfaceResult.reason : new Error("加载账号基础状态失败");
+  }
+
+  const surface = surfaceResult.value;
+  const automation = automationResult.status === "fulfilled" ? automationResult.value : undefined;
+  const accountBlocked = surface.account.status === "disabled" || surface.account.status === "error";
+  const hasProfile = Boolean(surface.account.handle || surface.account.display_name);
+  const hasActiveSources = surface.summary.active_source_count > 0;
+
+  const checks: AccountReadinessResponse["checks"] = {
+    credential: {
+      status: accountBlocked ? "blocked" : "warning",
+      detail: accountBlocked ? "账号状态异常，请先恢复账号。" : "当前后端未提供凭证明细，已跳过强校验。",
+    },
+    profile: {
+      status: hasProfile ? "ready" : "missing",
+      detail: hasProfile ? "账号基础资料已存在。" : "缺少账号 handle 或显示名。",
+      external_account_id: surface.account.external_account_id,
+    },
+    persona: {
+      status: "warning",
+      detail: "当前后端未提供 persona readiness 明细。",
+    },
+    sources: {
+      status: hasActiveSources ? "ready" : surface.summary.source_count > 0 ? "blocked" : "missing",
+      detail: hasActiveSources
+        ? `已启用 ${surface.summary.active_source_count} 个信息源。`
+        : surface.summary.source_count > 0
+          ? "已有信息源，但当前没有启用中的 source。"
+          : "尚未配置任何信息源。",
+      source_count: surface.summary.source_count,
+      active_source_count: surface.summary.active_source_count,
+      has_recent_documents: surface.summary.ready_briefs > 0 || surface.summary.pending_briefs > 0,
+    },
+    autopost: {
+      status: automation?.has_active_automation ? "ready" : "warning",
+      detail: automation?.has_active_automation ? "自动化调度可用。" : "当前未启用自动发帖策略。",
+      policy_status: automation?.has_active_automation ? "active" : "not_configured",
+      next_run_after: automation?.next_due_at,
+    },
+    engagement: {
+      status: automation?.engagement_automation.policy_status === "active" ? "ready" : "warning",
+      detail: automation?.engagement_automation.policy_status === "active" ? "互动策略已启用。" : "当前未启用互动策略。",
+      policy_status: automation?.engagement_automation.policy_status ?? "not_configured",
+      enabled_features: [],
+      blocked_reason_code: automation?.evaluation.blocked_reason_code,
+    },
+  };
+
+  const statuses = Object.values(checks).map((check) => check.status);
+  const summary = {
+    ready_count: statuses.filter((status) => status === "ready").length,
+    warning_count: statuses.filter((status) => status === "warning").length,
+    blocked_count: statuses.filter((status) => status === "blocked").length,
+    missing_count: statuses.filter((status) => status === "missing").length,
+  };
+
+  return {
+    account_id: surface.account.id,
+    workspace_id: surface.account.workspace_id,
+    overall_status: summary.blocked_count > 0 ? "blocked" : summary.warning_count > 0 || summary.missing_count > 0 ? "warning" : "ready",
+    summary,
+    checks,
+    runtime: {
+      orchestration_status: automation?.orchestration_status ?? "inactive",
+      blocked_reason_code: automation?.evaluation.blocked_reason_code,
+      rationale: automation?.evaluation.rationale ?? "当前后端暂未提供 readiness 接口，已根据账号基础信息生成兼容状态。",
+      next_due_at: automation?.next_due_at,
+      pending_draft_count: automation?.pending_draft_count,
+      pending_manual_review_draft_count: automation?.pending_manual_review_draft_count,
+      pending_auto_approve_draft_count: automation?.pending_auto_approve_draft_count,
+      max_pending_manual_review_drafts: automation?.max_pending_manual_review_drafts,
+    },
+  };
 }
 
 export async function triggerAccountAutomationTick(accountId: string): Promise<QueueAccountAutomationTickResponse> {
@@ -1536,6 +2038,55 @@ export async function pauseAccountAutomation(accountId: string): Promise<UpdateA
 
 export async function resumeAccountAutomation(accountId: string): Promise<UpdateAccountAutomationStateResponse> {
   return postBackendData<UpdateAccountAutomationStateResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/automation/resume`, {});
+}
+
+export async function upsertAccountCredential(accountId: string, payload:
+  | {
+      provider: "x_oauth1";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      secret_ref: string;
+    }
+  | {
+      provider: "x_oauth1";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      oauth1_token: {
+        access_token: string;
+        access_token_secret: string;
+      };
+    }
+  | {
+      provider: "api_key";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      secret_ref: string;
+    }
+  | {
+      provider: "api_key";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      api_key_token: {
+        bearer_token: string;
+      };
+    }
+  | {
+      provider: "x_oauth2";
+      status: "valid" | "invalid" | "expired" | "revoked";
+      oauth2_token: {
+        access_token: string;
+        refresh_token: string;
+        token_type: string;
+        expires_in: number;
+        scope?: string;
+      };
+    },
+): Promise<AccountCredentialResponse> {
+  return postBackendData<AccountCredentialResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/credentials`, payload);
+}
+
+export async function validateAccountCredential(accountId: string): Promise<AccountCredentialResponse> {
+  return postBackendData<AccountCredentialResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/credentials/validate`, {});
+}
+
+export async function syncAccountProfile(accountId: string): Promise<SyncAccountProfileResponse> {
+  return postBackendData<SyncAccountProfileResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/profile/sync`, {});
 }
 
 export async function listPersonaTemplates(workspaceId: string): Promise<PersonaTemplateListResponse> {
@@ -1558,6 +2109,51 @@ export async function applyPersonaTemplate(templateId: string, payload: {
   actor_id?: string;
 }): Promise<ApplyPersonaTemplateResponse> {
   return postBackendData<ApplyPersonaTemplateResponse>(`/api/backend/persona-templates/${encodeURIComponent(templateId)}/apply`, payload);
+}
+
+export async function getPersona(accountId: string): Promise<PersonaResponse | null> {
+  const { status, result } = await requestBackendResult<PersonaResponse>(`/api/backend/personas/${encodeURIComponent(accountId)}`);
+
+  if (!result.ok && status === 404) {
+    return null;
+  }
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+
+  return result.data;
+}
+
+export async function updatePersona(accountId: string, payload: {
+  workspace_id: string;
+  gender: string;
+  nationality: string;
+  age: number;
+  interests: string[];
+  personality_traits: string[];
+  writing_style: string;
+  bio: string;
+  distillation_sample_tweets: string;
+  source: "manual" | "template" | "distilled" | "generated";
+  actor_type: "user" | "agent" | "system";
+  actor_id?: string;
+}): Promise<BackendPersona> {
+  return putBackendData<BackendPersona>(`/api/backend/personas/${encodeURIComponent(accountId)}`, payload);
+}
+
+export async function distillPersona(accountId: string, payload: {
+  samples?: Array<{
+    kind?: "post" | "reply";
+    content: string;
+    canonical_url?: string;
+    created_at?: string;
+  }>;
+  twitter_handle?: string;
+  source_ids?: string[];
+  max_samples?: number;
+}): Promise<DistillPersonaResponse> {
+  return postBackendData<DistillPersonaResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/persona/distill`, payload);
 }
 
 export async function importAccounts(payload: {
@@ -1598,9 +2194,32 @@ export async function searchAppCommandTargets(workspaceId: string, input?: {
 }
 
 export async function getDashboardOverview(workspaceId: string): Promise<DashboardOverviewResponse> {
-  return getBackendData<DashboardOverviewResponse>(`/api/backend/dashboard/overview${buildQueryString({
+  const response = await getBackendData<DashboardOverviewResponse>(`/api/backend/dashboard/overview${buildQueryString({
     workspace_id: workspaceId,
   })}`);
+  const recent_accounts = response.recent_accounts.map((account) => {
+    const enriched = withDisplayAccountMetrics({
+      ...account,
+      workspace_id: workspaceId,
+      platform: "x",
+      following_count: 0,
+      post_count: 0,
+      created_at: account.updated_at,
+    });
+    return {
+      ...account,
+      follower_count: enriched.follower_count,
+    };
+  });
+
+  return {
+    ...response,
+    summary: {
+      ...response.summary,
+      total_followers: recent_accounts.reduce((sum, account) => sum + account.follower_count, 0),
+    },
+    recent_accounts,
+  };
 }
 
 export async function getMonitoringOverview(workspaceId: string, limit = 20): Promise<MonitoringOverviewResponse> {
@@ -1621,14 +2240,16 @@ export async function retryMonitoringQueueBacklog(payload: {
   workspace_id: string;
   kinds?: BackendMonitoringOperatorQueueItem["kind"][];
   limit?: number;
+  retry_mode?: "safe" | "all";
 }): Promise<RetryMonitoringQueueBacklogResponse> {
   return postBackendData<RetryMonitoringQueueBacklogResponse>("/api/backend/monitoring/queues/retry", payload);
 }
 
 export async function getAccountAnalytics(accountId: string, windowDays = 30): Promise<AccountAnalyticsResponse> {
-  return getBackendData<AccountAnalyticsResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/analytics${buildQueryString({
+  const response = await getBackendData<AccountAnalyticsResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/analytics${buildQueryString({
     window_days: windowDays,
   })}`);
+  return withDisplayAccountAnalytics(response, windowDays);
 }
 
 export async function listAlertChannels(workspaceId: string, limit = 50): Promise<AlertChannelListResponse> {
@@ -1700,8 +2321,11 @@ export async function resumeSource(sourceId: string): Promise<BackendSource> {
   return postBackendData<BackendSource>(`/api/backend/sources/${encodeURIComponent(sourceId)}/resume`, {});
 }
 
-export async function fetchSource(sourceId: string): Promise<FetchSourceResponse> {
-  return postBackendData<FetchSourceResponse>(`/api/backend/sources/${encodeURIComponent(sourceId)}/fetch`, {});
+export async function fetchSource(sourceId: string, options?: {
+  executeNow?: boolean;
+}): Promise<FetchSourceResponse> {
+  const suffix = options?.executeNow ? "?execute_now=1" : "";
+  return postBackendData<FetchSourceResponse>(`/api/backend/sources/${encodeURIComponent(sourceId)}/fetch${suffix}`, {});
 }
 
 export async function listSourceFetchRuns(sourceId: string): Promise<SourceFetchRunListResponse> {
@@ -1933,15 +2557,16 @@ export async function getDraftWorkbench(accountId: string, input?: {
 }
 
 export async function generateDraft(accountId: string, payload: {
-  topic?: string;
+  content_brief_id: string;
   trend_id?: string;
-  content_brief_id?: string;
 }): Promise<GenerateDraftResponse> {
   return postBackendData<GenerateDraftResponse>(`/api/backend/accounts/${encodeURIComponent(accountId)}/drafts/generate`, payload);
 }
 
 export async function generateDraftFromContentBrief(briefId: string): Promise<GenerateDraftResponse> {
-  return postBackendData<GenerateDraftResponse>(`/api/backend/content-briefs/${encodeURIComponent(briefId)}/drafts/generate`, {});
+  return postBackendData<GenerateDraftResponse>(`/api/backend/content-briefs/${encodeURIComponent(briefId)}/drafts/generate`, {
+    preview_mode: true,
+  });
 }
 
 export async function generateDraftReview(draftId: string): Promise<GenerateDraftReviewResponse> {
@@ -2083,6 +2708,35 @@ export async function upsertEngagementPolicy(accountId: string, payload: {
     allowed_channels: Array<"mention" | "reply" | "dm" | "comment">;
     blocked_classifications: Array<"collab" | "commerce" | "spam" | "normal" | "support">;
     require_manual_approval: boolean;
+    auto_follow?: {
+      enabled: boolean;
+      max_per_day: number;
+      rules: Array<{ type: "keyword"; value: string }>;
+    };
+    auto_retweet?: {
+      enabled: boolean;
+      max_per_day: number;
+      min_likes: number;
+      whitelist: string[];
+      keywords: string[];
+      delay_min_minutes: number;
+      delay_max_minutes: number;
+      quote_tweet_enabled: boolean;
+    };
+    auto_comment?: {
+      enabled: boolean;
+      max_per_day: number;
+      target_handles: string[];
+      style: "supportive" | "questioning" | "value-add";
+      mode: "latest" | "random";
+    };
+    auto_reply?: {
+      enabled: boolean;
+      max_per_day: number;
+      trigger_types: Array<"mention" | "reply" | "dm" | "comment">;
+      only_followers: boolean;
+      style: "grateful" | "interactive" | "brief";
+    };
   };
   status: "active" | "paused";
 }): Promise<EngagementPolicyResponse> {
@@ -2118,6 +2772,7 @@ export async function upsertAutopostPolicy(accountId: string, payload: {
   execution_body: {
     draft_review_mode: "manual" | "auto_approve";
     auto_queue_publish: boolean;
+    max_pending_manual_review_drafts?: number;
   };
   status: "active" | "paused";
 }): Promise<AutopostPolicyResponse> {
@@ -2138,6 +2793,75 @@ export async function pullMentions(accountId: string): Promise<{ job_id: string;
 
 export async function pullDirectMessages(accountId: string): Promise<{ job_id: string; status: string }> {
   return postBackendData<{ job_id: string; status: string }>(`/api/backend/accounts/${encodeURIComponent(accountId)}/direct-messages/pull`, {});
+}
+
+export async function listConnectorRequests(input: {
+  workspaceId: string;
+  accountId?: string;
+  limit?: number;
+}): Promise<ConnectorRequestsResponse> {
+  return getBackendData<ConnectorRequestsResponse>(`/api/backend/connector-requests${buildQueryString({
+    workspace_id: input.workspaceId,
+    account_id: input.accountId,
+    limit: input.limit,
+  })}`);
+}
+
+export async function followAccountOnX(accountId: string, payload: {
+  target_handle: string;
+}): Promise<{
+  connector_request_id: string;
+  target_user_id: string;
+  target_handle?: string;
+  following: boolean;
+  pending_follow?: boolean;
+}> {
+  return postBackendData(`/api/backend/accounts/${encodeURIComponent(accountId)}/engagement-actions/follow`, payload);
+}
+
+export async function repostPostOnX(accountId: string, payload: {
+  target_post_id: string;
+}): Promise<{
+  connector_request_id: string;
+  target_post_id: string;
+  reposted: boolean;
+}> {
+  return postBackendData(`/api/backend/accounts/${encodeURIComponent(accountId)}/engagement-actions/repost`, payload);
+}
+
+export async function commentOnPostOnX(accountId: string, payload: {
+  target_post_id: string;
+  text: string;
+}): Promise<{
+  connector_request_id: string;
+  external_comment_id: string;
+  external_comment_url?: string;
+}> {
+  return postBackendData(`/api/backend/accounts/${encodeURIComponent(accountId)}/engagement-actions/comment`, payload);
+}
+
+export async function replyToPostOnX(accountId: string, payload: {
+  target_post_id: string;
+  text: string;
+}): Promise<{
+  connector_request_id: string;
+  external_reply_id: string;
+  external_reply_url?: string;
+}> {
+  return postBackendData(`/api/backend/accounts/${encodeURIComponent(accountId)}/engagement-actions/reply`, payload);
+}
+
+export async function lookupPostsOnX(accountId: string, payload: {
+  post_ids: string[];
+}): Promise<{
+  posts: Array<{
+    external_post_id: string;
+    handle: string;
+    content: string;
+    occurred_at: string;
+  }>;
+}> {
+  return postBackendData(`/api/backend/accounts/${encodeURIComponent(accountId)}/engagement-actions/posts/lookup`, payload);
 }
 
 export async function getEngagementThread(threadId: string): Promise<EngagementThreadDetailResponse> {

@@ -23,6 +23,11 @@ export class QueuePullMentionsJob {
     }
 
     const now = this.deps.clock.now().toISOString();
+    const existingQueued = await this.deps.workerJobs.findQueuedByTypeAndTarget("mentions.pull", "account", account.id);
+    if (existingQueued) {
+      return existingQueued;
+    }
+
     const job = createWorkerJob({
       id: newId(),
       workspace_id: account.workspace_id,

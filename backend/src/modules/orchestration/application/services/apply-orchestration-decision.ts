@@ -4,6 +4,9 @@ import type { FinalizeAutopostRun } from "../../../autopost/application/commands
 import type { ClassifyInboxThread } from "../../../agent-runtime/application/commands/classify-inbox-thread";
 import type { GenerateDraft } from "../../../drafts/application/commands/generate-draft";
 import type { ExecuteRecurringBriefPlan } from "../../../editorial/application/commands/execute-recurring-brief-plan";
+import type { ExecuteAutoComment } from "../../../engagement/application/commands/execute-auto-comment";
+import type { ExecuteAutoFollow } from "../../../engagement/application/commands/execute-auto-follow";
+import type { ExecuteAutoRepost } from "../../../engagement/application/commands/execute-auto-repost";
 import type { GenerateReplyProposal } from "../../../engagement/application/commands/generate-reply-proposal";
 import type { OrchestrationDecision } from "../../domain/orchestration-decision";
 
@@ -14,6 +17,9 @@ export interface ApplyOrchestrationDecisionDependencies {
   finalizeAutopostRun: FinalizeAutopostRun;
   generateDraft: GenerateDraft;
   executeRecurringBriefPlan: ExecuteRecurringBriefPlan;
+  executeAutoComment: ExecuteAutoComment;
+  executeAutoFollow: ExecuteAutoFollow;
+  executeAutoRepost: ExecuteAutoRepost;
   generateReplyProposal: GenerateReplyProposal;
 }
 
@@ -95,7 +101,9 @@ export class ApplyOrchestrationDecision {
     }
 
     if (decision.type === "engagement.reply.generate") {
-      const result = await this.deps.generateReplyProposal.execute(decision.thread_id);
+      const result = await this.deps.generateReplyProposal.execute(decision.thread_id, {
+        preferred_style: decision.preferred_style,
+      });
       return {
         decision,
         execution: {
@@ -105,6 +113,21 @@ export class ApplyOrchestrationDecision {
           thread_id: decision.thread_id,
         },
       };
+    }
+
+    if (decision.type === "engagement.comment.execute") {
+      const result = await this.deps.executeAutoComment.execute(decision.account_id);
+      return { decision, execution: result };
+    }
+
+    if (decision.type === "engagement.repost.execute") {
+      const result = await this.deps.executeAutoRepost.execute(decision.account_id);
+      return { decision, execution: result };
+    }
+
+    if (decision.type === "engagement.follow.execute") {
+      const result = await this.deps.executeAutoFollow.execute(decision.account_id);
+      return { decision, execution: result };
     }
 
     const result = await this.deps.generateDraft.execute({

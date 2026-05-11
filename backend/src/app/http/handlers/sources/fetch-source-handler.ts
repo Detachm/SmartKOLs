@@ -6,9 +6,10 @@ import type { FetchSource } from "../../../../modules/sources/application/comman
 export async function fetchSourceHandler(
   command: FetchSource,
   sourceId: string,
+  options?: { execute_now?: boolean },
 ): Promise<Result<FetchSourceResponse>> {
   try {
-    return ok(await command.execute(sourceId));
+    return ok(await command.execute(sourceId, options));
   } catch (error) {
     if (error instanceof AppError) {
       return err(error);

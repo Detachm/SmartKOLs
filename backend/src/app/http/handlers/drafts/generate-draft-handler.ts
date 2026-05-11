@@ -14,6 +14,7 @@ export async function generateDraftHandler(
       topic: input.topic,
       trend_id: input.trend_id,
       content_brief_id: input.content_brief_id,
+      preview_mode: input.preview_mode,
     }));
   } catch (error) {
     if (error instanceof AppError) {

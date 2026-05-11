@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { useMockStore } from "@/lib/mock-store";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Upload, FileText, CheckCircle } from "lucide-react";
+import { Upload, FileText, CheckCircle, Loader2 } from "lucide-react";
+import { getLiveSession } from "@/lib/session-client";
+import { importAccounts } from "@/lib/live-api";
 
 interface ParsedRow { handle: string; displayName: string; group: string; }
 
@@ -24,9 +25,11 @@ const EXAMPLE_CSV = `handle,displayName,group
 @new_kol_03,新KOL账号三,AI KOL组`;
 
 export default function CsvImportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { addAccounts, groups } = useMockStore();
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [imported, setImported] = useState(false);
+  const [importedCount, setImportedCount] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -37,33 +40,40 @@ export default function CsvImportModal({ open, onClose }: { open: boolean; onClo
       const text = ev.target?.result as string;
       setRows(parseCsv(text));
       setImported(false);
+      setImportedCount(0);
+      setError(null);
     };
     reader.readAsText(file);
   };
 
-  const handleImport = () => {
-    const newAccounts = rows.map((row, i) => {
-      const group = groups.find((g) => g.name === row.group);
-      return {
-        id: `acc_import_${Date.now()}_${i}`,
-        handle: row.handle.startsWith("@") ? row.handle : `@${row.handle}`,
-        displayName: row.displayName,
-        avatarSeed: row.handle.replace("@", "").toLowerCase(),
-        followersCount: 0,
-        followingCount: 0,
-        tweetsCount: 0,
-        active: true,
-        createdAt: new Date().toISOString().split("T")[0],
-        groupId: group?.id,
-      };
-    });
-    addAccounts(newAccounts);
-    setImported(true);
+  const handleImport = async () => {
+    setImporting(true);
+    setError(null);
+    try {
+      const session = await getLiveSession();
+      const result = await importAccounts({
+        workspace_id: session.selected_workspace.id,
+        create_missing_groups: true,
+        rows: rows.map((row) => ({
+          handle: row.handle.startsWith("@") ? row.handle : `@${row.handle}`,
+          display_name: row.displayName,
+          group_name: row.group || undefined,
+        })),
+      });
+      setImportedCount(result.created_account_count);
+      setImported(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导入账号失败");
+    } finally {
+      setImporting(false);
+    }
   };
 
   const handleClose = () => {
     setRows([]);
     setImported(false);
+    setImportedCount(0);
+    setError(null);
     onClose();
   };
 
@@ -125,15 +135,18 @@ export default function CsvImportModal({ open, onClose }: { open: boolean; onClo
                 </div>
                 <div className="flex gap-3 justify-end mt-4">
                   <Button variant="outline" onClick={handleClose}>取消</Button>
-                  <Button onClick={handleImport}>确认导入 {rows.length} 个账号</Button>
+                  <Button onClick={() => void handleImport()} disabled={importing}>
+                    {importing ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />导入中...</> : `确认导入 ${rows.length} 个账号`}
+                  </Button>
                 </div>
               </div>
             )}
+            {error ? <p className="text-sm text-[#D93025]">{error}</p> : null}
           </div>
         ) : (
           <div className="text-center py-8">
             <CheckCircle className="w-12 h-12 mx-auto mb-3 text-[#00BA7C]" />
-            <p className="text-[#111111] font-medium">成功导入 {rows.length} 个账号</p>
+            <p className="text-[#111111] font-medium">成功导入 {importedCount} 个账号</p>
             <Button className="mt-4" onClick={handleClose}>完成</Button>
           </div>
         )}

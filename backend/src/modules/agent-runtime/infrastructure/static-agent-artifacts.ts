@@ -131,7 +131,7 @@ const AGENT_ARTIFACTS: AgentArtifactBundle[] = [
     prompt: {
       ref: "agent.prompt.reply-proposer@v1",
       system_prompt: "You draft a single reply proposal for a social media operator. Return only JSON.",
-      developer_prompt: "Use the conversation context to propose one concise reply and explain why it is appropriate.",
+      developer_prompt: "Use the conversation context to propose one concise reply and explain why it is appropriate. If preferred_style is present, the reply must clearly follow that style without mentioning the style label.",
       input_schema_ref: "agent.input.reply-proposer@v1",
       output_schema_ref: "agent.output.reply-proposer@v1",
       input_schema: {
@@ -144,6 +144,7 @@ const AGENT_ARTIFACTS: AgentArtifactBundle[] = [
             enum: ["mention", "reply", "dm", "comment"],
           },
           counterpart_handle: { type: "string" },
+          preferred_style: { type: "string" },
           messages: {
             type: "array",
             minItems: 1,
@@ -225,7 +226,19 @@ const AGENT_ARTIFACTS: AgentArtifactBundle[] = [
     prompt: {
       ref: "agent.prompt.brief-builder@v1",
       system_prompt: "You turn external source documents into an operator-facing social content brief. Return only JSON.",
-      developer_prompt: "Build one concise content brief grounded only in the supplied documents. The brief must identify a clear topic, a concrete angle, a target audience, and a practical outline for one short-form social post. Evidence_items must point back to the supplied source_document_id values only. Prefer omission over invention. If the documents do not support a strong claim, keep the brief narrow and explicit.",
+      developer_prompt: [
+        "Build one concise content brief grounded only in the supplied documents.",
+        "The brief is for a single native X post, not a campaign slogan, brand manifesto, or thread outline.",
+        "topic should be specific and source-backed.",
+        "angle should be one human-readable take with a concrete tradeoff, tension, or implication.",
+        "audience should describe who would care, not a broad marketing segment.",
+        "outline should be a compact writing plan with 2-4 beats. Do not prescribe final wording.",
+        "Never put reusable slogans, bilingual catchphrases, forced CTAs, or exact sentence templates into the outline.",
+        "Do not write 'While X, Y builds', 'keep building', 'real utility', 'unstoppable infrastructure', 'borderless mediator', or similar promotional framing.",
+        "Do not force TRON, stablecoins, Bitcoin, decentralization, or geopolitics into the angle unless the supplied evidence directly supports it.",
+        "Prefer a narrow, slightly opinionated observation over a sweeping thesis.",
+        "Evidence_items must point back to the supplied source_document_id values only. Prefer omission over invention. If the documents do not support a strong claim, keep the brief narrow and explicit.",
+      ].join(" "),
       input_schema_ref: "agent.input.brief-builder@v1",
       output_schema_ref: "agent.output.brief-builder@v1",
       input_schema: {
@@ -353,8 +366,23 @@ const AGENT_ARTIFACTS: AgentArtifactBundle[] = [
     },
     prompt: {
       ref: "agent.prompt.writer@v1",
-      system_prompt: "You write social posts that match an account persona and current source context. Return only JSON.",
-      developer_prompt: "Write one publish-ready draft. For generation_mode=source_backed, the draft must follow the supplied content_brief and evidence_documents rather than copying phrasing from any source. For generation_mode=manual_topic, use topic, persona, and any optional context to produce an original post.",
+      system_prompt: "You write native-feeling X posts that match an account persona and current source context. Return only JSON.",
+      developer_prompt: [
+        "Write one publish-ready draft that sounds like the account owner had a thought and posted it directly, not like a brand recap or AI summary.",
+        "Ground the post in the supplied content_brief and evidence_documents, but do not copy source phrasing.",
+        "Use the persona samples for rhythm, vocabulary, and level of certainty. Do not copy their exact lines.",
+        "Pick one shape only: a sharp observation, a contrarian caveat, a practical warning, or a small prediction. Do not combine all of them.",
+        "Preferred structure: one concrete detail, then one implication. It is acceptable to be short, partial, opinionated, or slightly asymmetric if that sounds more human.",
+        "Let the post have a little texture: a clipped sentence, a mild hedge, a rhetorical question, or a specific noun is better than a polished slogan.",
+        "Do not over-explain the full brief. A real X post can leave context implied.",
+        "Avoid template language: no 'While X, Y builds', no generic 'keep building/keep going', no 'real utility', no 'unstoppable infrastructure', no 'borderless/neutral mediator' slogans, and no tacked-on bilingual slogan unless the supplied persona samples consistently do that.",
+        "Avoid corporate abstractions and stacked nouns. Name the actual constraint, tradeoff, or market behavior instead.",
+        "Do not force TRON, stablecoins, Bitcoin, decentralization, or geopolitical framing into every post unless the brief evidence directly supports that angle.",
+        "If the brief itself contains promotional slogans, treat them as bad scaffolding and rewrite the underlying idea in plain account voice.",
+        "No hashtags unless the persona samples use them. No emoji unless the persona samples use them. No final motivational CTA unless the persona samples repeatedly do that.",
+        "Hard constraint: the post must fit within a single X post after X weighted-length counting, so treat 280 weighted characters as the absolute ceiling and aim for 150-230 weighted characters.",
+        "Keep it to a single post, not a thread. Do not produce bilingual mirror text, repeated slogans, or a second paragraph that restates the first in another language.",
+      ].join(" "),
       input_schema_ref: "agent.input.writer@v1",
       output_schema_ref: "agent.output.writer@v1",
       input_schema: {
@@ -364,7 +392,7 @@ const AGENT_ARTIFACTS: AgentArtifactBundle[] = [
           account_id: { type: "string", minLength: 1 },
           generation_mode: {
             type: "string",
-            enum: ["manual_topic", "source_backed"],
+            enum: ["source_backed"],
           },
           topic: { type: "string", minLength: 1 },
           trend: {

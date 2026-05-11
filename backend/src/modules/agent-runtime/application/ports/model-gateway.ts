@@ -73,12 +73,13 @@ export interface ModelGateway {
     thread_id: string;
     channel: "mention" | "reply" | "dm" | "comment";
     counterpart_handle?: string;
+    preferred_style?: string;
     messages: Array<{ sender_handle?: string; content: string; created_at: string }>;
   }, options: { agent_version: string }): Promise<ReplyProposalResult>;
 
   generateDraft(input: {
     account_id: string;
-    generation_mode: "manual_topic" | "source_backed";
+    generation_mode: "source_backed";
     topic: string;
     trend?: {
       topic: string;

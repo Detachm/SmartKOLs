@@ -62,11 +62,19 @@ export function failOrchestrationRun(
   input: {
     error_code: string;
     error_message: string;
+    eligible_actions_json?: string;
+    chosen_action_json?: string;
     finished_at: string;
   },
 ): OrchestrationRun {
   return {
     ...run,
+    eligible_actions_json: input.eligible_actions_json
+      ? requireNonEmptyString(input.eligible_actions_json, "eligible_actions_json")
+      : run.eligible_actions_json,
+    chosen_action_json: input.chosen_action_json
+      ? requireNonEmptyString(input.chosen_action_json, "chosen_action_json")
+      : run.chosen_action_json,
     status: "failed",
     error_code: requireNonEmptyString(input.error_code, "error_code"),
     error_message: requireNonEmptyString(input.error_message, "error_message"),

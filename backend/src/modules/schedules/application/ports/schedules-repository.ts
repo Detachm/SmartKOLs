@@ -3,6 +3,7 @@ import type { PublishJob, PublishJobStatus } from "../../domain/publish-job";
 
 export interface SchedulesRepository {
   findScheduleById(scheduleId: string): Promise<PublishSchedule | null>;
+  listDueScheduledSchedules(now: string, limit: number): Promise<PublishSchedule[]>;
   createSchedule(schedule: PublishSchedule): Promise<void>;
   saveSchedule(schedule: PublishSchedule): Promise<void>;
   createPublishJob(job: PublishJob): Promise<void>;

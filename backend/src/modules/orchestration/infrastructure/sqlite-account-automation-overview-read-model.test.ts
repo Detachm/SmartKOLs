@@ -343,3 +343,179 @@ test("SqliteAccountAutomationOverviewReadModel counts pending-review and approve
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("SqliteAccountAutomationOverviewReadModel splits pending draft backlog by draft review mode", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "smartkols-orch-"));
+  const dbPath = path.join(tempDir, "test.sqlite");
+  const runtime = createSqliteRuntime(dbPath);
+
+  try {
+    runtime.db.run(
+      `INSERT INTO workspaces (id, name, slug, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["ws_1", "Workspace", "workspace", "active", "2026-04-19T10:00:00.000Z", "2026-04-19T10:00:00.000Z"],
+    );
+    runtime.db.run(
+      `INSERT INTO accounts (
+         id, workspace_id, platform, handle, display_name, status,
+         follower_count, following_count, post_count, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["acct_1", "ws_1", "x", "@acct", "Acct", "active", 0, 0, 0, "2026-04-19T10:00:00.000Z", "2026-04-19T10:00:00.000Z"],
+    );
+
+    runtime.db.run(
+      `INSERT INTO autopost_policies (
+         id, workspace_id, account_id, cadence_body, content_strategy_body, execution_body, status, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "policy_auto",
+        "ws_1",
+        "acct_1",
+        JSON.stringify({ timezone: "UTC", weekday_codes: ["mon"], slot_times: ["09:00"], min_spacing_minutes: 60 }),
+        JSON.stringify({ generation_mode: "from_trend" }),
+        JSON.stringify({ draft_review_mode: "auto_approve", auto_queue_publish: true }),
+        "active",
+        "2026-04-19T10:00:00.000Z",
+      ],
+    );
+    runtime.db.run(
+      `INSERT INTO drafts (
+         id, workspace_id, account_id, trend_id, current_version_id, status, topic, scheduled_for, generated_by_run_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["draft_manual", "ws_1", "acct_1", null, null, "pending", "manual topic", null, null, "2026-04-19T10:00:00.000Z", "2026-04-19T10:00:00.000Z"],
+    );
+    runtime.db.run(
+      `INSERT INTO drafts (
+         id, workspace_id, account_id, trend_id, current_version_id, status, topic, scheduled_for, generated_by_run_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["draft_auto_bound", "ws_1", "acct_1", null, null, "pending", "auto topic", null, null, "2026-04-19T10:01:00.000Z", "2026-04-19T10:01:00.000Z"],
+    );
+
+    runtime.db.run(
+      `INSERT INTO agent_definitions (id, code, name, version, input_schema, output_schema, tool_policy, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "agent_def_1",
+        "draft-writer",
+        "Draft Writer",
+        "v1",
+        "{}",
+        "{}",
+        JSON.stringify({ ref: "test", tools: [] }),
+        1,
+      ],
+    );
+    runtime.db.run(
+      `INSERT INTO agent_tasks (
+         id, workspace_id, agent_definition_id, task_type, target_type, target_id, payload, status, created_at, started_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "draft_task_auto",
+        "ws_1",
+        "agent_def_1",
+        "draft.generate",
+        "account",
+        "acct_1",
+        JSON.stringify({ account_id: "acct_1" }),
+        "succeeded",
+        "2026-04-19T10:02:00.000Z",
+        "2026-04-19T10:02:00.000Z",
+        "2026-04-19T10:02:30.000Z",
+      ],
+    );
+    runtime.db.run(
+      `INSERT INTO agent_runs (
+         id, task_id, request_id, run_no, model_name, status, output, error_code, error_message, started_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "agent_run_auto",
+        "draft_task_auto",
+        null,
+        1,
+        "test-model",
+        "succeeded",
+        "{}",
+        null,
+        null,
+        "2026-04-19T10:02:00.000Z",
+        "2026-04-19T10:02:30.000Z",
+      ],
+    );
+    runtime.db.run(
+      `INSERT INTO drafts (
+         id, workspace_id, account_id, trend_id, current_version_id, status, topic, scheduled_for, generated_by_run_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["draft_auto_transient", "ws_1", "acct_1", null, null, "pending", "auto transient", null, "agent_run_auto", "2026-04-19T10:02:31.000Z", "2026-04-19T10:02:31.000Z"],
+    );
+
+    runtime.db.run(
+      `INSERT INTO autopost_runs (
+         id, policy_id, workspace_id, account_id, generation_mode, source_scope, scheduled_for, trend_id, brief_id,
+         brief_task_id, draft_id, draft_task_id, schedule_id, publish_job_id, status, error_code, error_message,
+         created_at, updated_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "run_auto_bound",
+        "policy_auto",
+        "ws_1",
+        "acct_1",
+        "from_trend",
+        "workspace",
+        "2026-04-19T11:00:00.000Z",
+        null,
+        null,
+        null,
+        "draft_auto_bound",
+        null,
+        null,
+        null,
+        "awaiting_review",
+        null,
+        null,
+        "2026-04-19T10:01:00.000Z",
+        "2026-04-19T10:01:00.000Z",
+        "2026-04-19T10:01:00.000Z",
+      ],
+    );
+    runtime.db.run(
+      `INSERT INTO autopost_runs (
+         id, policy_id, workspace_id, account_id, generation_mode, source_scope, scheduled_for, trend_id, brief_id,
+         brief_task_id, draft_id, draft_task_id, schedule_id, publish_job_id, status, error_code, error_message,
+         created_at, updated_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "run_auto_transient",
+        "policy_auto",
+        "ws_1",
+        "acct_1",
+        "from_trend",
+        "workspace",
+        "2026-04-19T12:00:00.000Z",
+        null,
+        null,
+        null,
+        null,
+        "draft_task_auto",
+        null,
+        null,
+        "draft_generating",
+        null,
+        null,
+        "2026-04-19T10:02:00.000Z",
+        "2026-04-19T10:02:31.000Z",
+        null,
+      ],
+    );
+
+    const readModel = new SqliteAccountAutomationOverviewReadModel(runtime.db);
+    const overview = await readModel.getAccountAutomationOverview("acct_1");
+
+    assert.ok(overview);
+    assert.equal(overview?.pending_draft_count, 3);
+    assert.equal(overview?.pending_manual_review_draft_count, 1);
+    assert.equal(overview?.pending_auto_approve_draft_count, 2);
+  } finally {
+    runtime.db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

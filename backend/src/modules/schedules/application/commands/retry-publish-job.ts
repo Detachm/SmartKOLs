@@ -2,7 +2,9 @@ import { AppError } from "../../../../core/errors/app-error";
 import { newId } from "../../../../core/ids/new-id";
 import type { Clock } from "../../../../core/time/clock";
 import type { AuditLogRepository } from "../../../audit/application/ports/audit-log-repository";
+import type { DraftVersionRepository } from "../../../drafts/application/ports/draft-version-repository";
 import type { DraftsRepository } from "../../../drafts/application/ports/drafts-repository";
+import { assertXPostWithinLimit } from "../../../connector-x/domain/x-post-length";
 import { createPublishJob } from "../../domain/publish-job";
 import { retryFailedSchedule } from "../../domain/publish-schedule";
 import type { SchedulesRepository } from "../ports/schedules-repository";
@@ -10,6 +12,7 @@ import type { SchedulesRepository } from "../ports/schedules-repository";
 export interface RetryPublishJobDependencies {
   schedules: SchedulesRepository;
   drafts: DraftsRepository;
+  versions: DraftVersionRepository;
   auditLogs: AuditLogRepository;
   clock: Clock;
 }
@@ -52,6 +55,33 @@ export class RetryPublishJob {
         details: { draft_id: schedule.draft_id, schedule_id: schedule.id },
       });
     }
+    if (!draft.current_version_id) {
+      throw new AppError("INVALID_STATE", "draft must have a current version before publish retry", {
+        details: { draft_id: draft.id, schedule_id: schedule.id },
+      });
+    }
+
+    const version = await this.deps.versions.findById(draft.current_version_id);
+    if (!version) {
+      throw new AppError("NOT_FOUND", "draft current version not found for publish retry", {
+        details: {
+          draft_id: draft.id,
+          version_id: draft.current_version_id,
+          schedule_id: schedule.id,
+        },
+      });
+    }
+
+    assertXPostWithinLimit(version.content, {
+      message: "draft content exceeds X weighted length limit and cannot be retried for publish",
+      details: {
+        draft_id: draft.id,
+        version_id: version.id,
+        schedule_id: schedule.id,
+        publish_job_id: previousJob.id,
+      },
+    });
+
     const nextDraft = {
       ...draft,
       status: "scheduled" as const,

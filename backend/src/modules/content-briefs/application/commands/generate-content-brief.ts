@@ -3,21 +3,29 @@ import { newId } from "../../../../core/ids/new-id";
 import type { AgentRuntimeRepository } from "../../../agent-runtime/application/ports/agent-runtime-repository";
 import { createAgentTask } from "../../../agent-runtime/domain/agent-task";
 import type { AccountsRepository } from "../../../accounts/application/ports/accounts-repository";
+import type { AuditLogRepository } from "../../../audit/application/ports/audit-log-repository";
 import type { QueueAccountAutomationTick } from "../../../orchestration/application/commands/queue-account-automation-tick";
+import type { PersonasRepository } from "../../../personas/application/ports/personas-repository";
+import type { SourcesRepository } from "../../../sources/application/ports/sources-repository";
 import type { ContentBriefsRepository } from "../ports/content-briefs-repository";
-import { createContentBrief, type ContentBriefGenerationMode } from "../../domain/content-brief";
+import { completeContentBrief, createContentBrief, startContentBrief, type ContentBriefGenerationMode } from "../../domain/content-brief";
+import { createContentBriefEvidenceItem } from "../../domain/content-brief-evidence-item";
 import type { AutopostAutomationContext } from "../../../autopost/domain/autopost-automation-context";
 import {
   createAccountActiveSourcesContentBriefSourceScope,
   createSelectedDocumentsContentBriefSourceScope,
   serializeContentBriefSourceScope,
 } from "../../domain/content-brief-source-scope";
-import type { GenerateContentBriefSourceScopeRequest } from "../../../../contracts/api/content-briefs";
+import type { GenerateContentBriefResponse, GenerateContentBriefSourceScopeRequest } from "../../../../contracts/api/content-briefs";
+import { buildDeterministicContentBrief } from "../deterministic-content-brief";
 
 export interface GenerateContentBriefDependencies {
   runtime: AgentRuntimeRepository;
   accounts: AccountsRepository;
   contentBriefs: ContentBriefsRepository;
+  personas: PersonasRepository;
+  sources: SourcesRepository;
+  auditLogs: AuditLogRepository;
   queueAccountAutomationTick: QueueAccountAutomationTick;
   now: () => string;
 }
@@ -34,7 +42,7 @@ export class GenerateContentBrief {
     topic_hint?: string;
     audience?: string;
     angle_hint?: string;
-  }) {
+  }): Promise<GenerateContentBriefResponse> {
     const account = await this.deps.accounts.findById(input.account_id);
     if (!account) {
       throw new AppError("NOT_FOUND", "account not found", {
@@ -81,7 +89,7 @@ export class GenerateContentBrief {
       requested_angle_hint: requestedAngleHint,
     }));
 
-    await this.deps.contentBriefs.saveBrief(createContentBrief({
+    const queuedBrief = createContentBrief({
       id: briefId,
       workspace_id: account.workspace_id,
       account_id: account.id,
@@ -91,7 +99,40 @@ export class GenerateContentBrief {
       source_scope: sourceScope,
       created_at: now,
       updated_at: now,
-    }));
+    });
+
+    if (generationMode === "from_documents") {
+      const fastBrief = await this.buildFastSelectedDocumentsBrief(queuedBrief, {
+        source_document_ids: input.source_document_ids ?? [],
+        requestedAudience,
+        requestedAngleHint,
+      });
+      await this.deps.contentBriefs.saveBrief(fastBrief.brief);
+      await this.deps.contentBriefs.replaceEvidenceItems(fastBrief.brief.id, fastBrief.evidenceItems);
+      await this.deps.auditLogs.append({
+        id: newId(),
+        workspace_id: account.workspace_id,
+        actor_type: "user",
+        entity_type: "content_brief",
+        entity_id: fastBrief.brief.id,
+        action: "content_brief.generated",
+        after_state: JSON.stringify(fastBrief.brief),
+        created_at: now,
+      });
+      await this.deps.queueAccountAutomationTick.execute({
+        account_id: account.id,
+        trigger_kind: "system",
+        create_if_missing: true,
+      });
+
+      return {
+        task_id: "",
+        status: "succeeded" as const,
+        brief_id: fastBrief.brief.id,
+      };
+    }
+
+    await this.deps.contentBriefs.saveBrief(queuedBrief);
 
     const task = createAgentTask({
       id: newId(),
@@ -118,6 +159,103 @@ export class GenerateContentBrief {
       status: task.status,
       brief_id: briefId,
     };
+  }
+
+  private async buildFastSelectedDocumentsBrief(
+    brief: ReturnType<typeof createContentBrief>,
+    input: {
+      source_document_ids: string[];
+      requestedAudience?: string;
+      requestedAngleHint?: string;
+    },
+  ) {
+    const accountSources = await this.deps.sources.listSourcesByAccountId(brief.account_id);
+    const allowedSourceIds = new Set(accountSources.map((source) => source.id));
+    const documents = await this.deps.sources.listDocumentsByIds(input.source_document_ids);
+    const selected = documents.filter((document) => allowedSourceIds.has(document.source_id));
+
+    if (selected.length !== input.source_document_ids.length) {
+      throw new AppError("VALIDATION_ERROR", "source_document_ids must all resolve to documents owned by the target account", {
+        details: {
+          account_id: brief.account_id,
+          requested_count: input.source_document_ids.length,
+          resolved_count: selected.length,
+        },
+      });
+    }
+
+    const persona = await this.deps.personas.findByAccountId(brief.account_id);
+    const normalizedDocuments = selected.map((document) => ({
+      source_document_id: document.id,
+      title: normalizeBriefDocumentTitle(document.title, document.summary, document.body_text, document.canonical_url),
+      summary: normalizeBriefDocumentSummary(document.summary, document.body_text, document.title),
+      canonical_url: document.canonical_url,
+      published_at: document.published_at,
+    }));
+    const deterministic = buildDeterministicContentBrief({
+      topic_hint: brief.topic_hint,
+      angle_hint: input.requestedAngleHint,
+      audience: input.requestedAudience,
+      documents: normalizedDocuments,
+      persona: {
+        writing_style: persona?.writing_style,
+        bio: persona?.bio,
+        interests: persona?.interests ?? [],
+        personality_traits: persona?.personality_traits,
+      },
+    });
+    const runningBrief = startContentBrief(brief, brief.updated_at, `system:selected_documents_fast_path:${brief.id}`);
+    const completedBrief = completeContentBrief(runningBrief, {
+      topic: deterministic.topic,
+      angle: deterministic.angle,
+      audience: deterministic.audience,
+      outline: deterministic.outline,
+      updated_at: this.deps.now(),
+    });
+
+    return {
+      brief: completedBrief,
+      evidenceItems: deterministic.evidence_items.map((item, index) => createContentBriefEvidenceItem({
+        id: newId(),
+        brief_id: completedBrief.id,
+        source_document_id: item.source_document_id,
+        rank: index + 1,
+        usage_reason: item.usage_reason,
+        key_claims: item.key_claims,
+        quoted_excerpt: item.quoted_excerpt,
+        created_at: this.deps.now(),
+      })),
+    };
+  }
+}
+
+function normalizeBriefDocumentSummary(summary: string, bodyText: string, title: string) {
+  const normalizedSummary = summary.trim();
+  if (normalizedSummary !== "") {
+    return normalizedSummary;
+  }
+
+  const fallback = bodyText.trim() || title.trim();
+  return fallback.slice(0, 280);
+}
+
+function normalizeBriefDocumentTitle(title: string, summary: string, bodyText: string, canonicalUrl: string) {
+  const normalizedTitle = title.trim();
+  if (normalizedTitle !== "") {
+    return normalizedTitle;
+  }
+
+  const fallbackText = summary.trim() || bodyText.trim();
+  if (fallbackText !== "") {
+    return fallbackText.slice(0, 120);
+  }
+
+  try {
+    const url = new URL(canonicalUrl);
+    const path = url.pathname.replace(/^\/+/, "").trim();
+    return (path !== "" ? `${url.hostname}/${path}` : url.hostname).slice(0, 120);
+  } catch {
+    return canonicalUrl.trim().slice(0, 120) || "Untitled source";
   }
 }
 

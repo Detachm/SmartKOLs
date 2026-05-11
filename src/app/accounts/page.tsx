@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useMockStore } from "@/lib/mock-store";
+import { Suspense, useState, useMemo, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -10,8 +9,38 @@ import CsvImportModal from "@/components/accounts/CsvImportModal";
 import PersonaTemplateModal from "@/components/accounts/PersonaTemplateModal";
 import HealthCard from "@/components/accounts/HealthCard";
 import Link from "next/link";
-import { Plus, Upload, Search, Trash2, Users, Layers, ChevronRight } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, Upload, Search, Trash2, Users, Layers, ChevronRight, CheckCircle2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  assignAccountsToGroup,
+  createAccountGroup,
+  deleteAccount,
+  listAccountGroups,
+  listAccounts,
+  updatePersona,
+  type BackendAccount,
+  type BackendAccountGroup,
+} from "@/lib/live-api";
+import { getLiveSession } from "@/lib/session-client";
+
+interface AccountRow {
+  id: string;
+  handle: string;
+  displayName: string;
+  avatarSeed: string;
+  avatarUrl?: string;
+  followersCount: number;
+  tweetsCount: number;
+  active: boolean;
+  groupId?: string;
+}
+
+interface GroupRow {
+  id: string;
+  name: string;
+  color: string;
+}
 
 function formatNumber(n: number) {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
@@ -19,8 +48,36 @@ function formatNumber(n: number) {
   return String(n);
 }
 
-export default function AccountsPage() {
-  const { accounts, groups, deleteAccounts, moveAccountsToGroup, addGroup, randomizePersonas } = useMockStore();
+function mapAccount(account: BackendAccount): AccountRow {
+  return {
+    id: account.id,
+    handle: account.handle,
+    displayName: account.display_name,
+    avatarSeed: account.handle.replace(/^@/, "") || account.avatar_url || "smartkols",
+    avatarUrl: account.avatar_url,
+    followersCount: account.follower_count,
+    tweetsCount: account.post_count,
+    active: account.status === "active",
+    groupId: account.group_id,
+  };
+}
+
+function mapGroup(group: BackendAccountGroup): GroupRow {
+  return {
+    id: group.id,
+    name: group.name,
+    color: group.color,
+  };
+}
+
+function AccountsPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [groups, setGroups] = useState<GroupRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
@@ -29,6 +86,46 @@ export default function AccountsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [newGroupName, setNewGroupName] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
+  const [hideConnectionBanner, setHideConnectionBanner] = useState(false);
+
+  const loadAccounts = useCallback(async () => {
+    setLoading(true);
+    setActionError(null);
+    try {
+      const session = await getLiveSession();
+      const currentWorkspaceId = session.selected_workspace.id;
+      const [accountResponse, groupResponse] = await Promise.all([
+        listAccounts(currentWorkspaceId),
+        listAccountGroups(currentWorkspaceId),
+      ]);
+
+      setWorkspaceId(currentWorkspaceId);
+      setAccounts(accountResponse.accounts.map(mapAccount));
+      setGroups(groupResponse.groups.map((item) => mapGroup(item.group)));
+    } catch (cause) {
+      setAccounts([]);
+      setGroups([]);
+      setActionError(cause instanceof Error ? cause.message : "加载账号列表失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAccounts();
+  }, [loadAccounts]);
+
+  const connected = searchParams.get("connected") === "1";
+  const connectedAccountId = searchParams.get("account_id");
+  const connectedAccount = connectedAccountId
+    ? accounts.find((account) => account.id === connectedAccountId)
+    : undefined;
+
+  useEffect(() => {
+    if (connected && connectedAccountId && !loading) {
+      router.replace(`/accounts/${connectedAccountId}/persona?connected=1`);
+    }
+  }, [connected, connectedAccountId, loading, router]);
 
   const filtered = useMemo(() => {
     return accounts.filter((a) => {
@@ -54,16 +151,66 @@ export default function AccountsPage() {
     }
   };
 
-  const handleDelete = () => {
-    deleteAccounts(Array.from(selected));
+  const handleDelete = async () => {
+    const ids = Array.from(selected);
     setSelected(new Set());
+    setActionError(null);
+    const results = await Promise.allSettled(ids.map((id) => deleteAccount(id)));
+    const failed = results.filter((result) => result.status === "rejected").length;
+    if (failed > 0) {
+      setActionError(`${failed} 个账号删除失败，请刷新后重试。`);
+    }
+    await loadAccounts();
   };
 
-  const handleAddGroup = () => {
+  const handleAddGroup = async () => {
     if (!newGroupName.trim()) return;
-    addGroup({ id: `grp_${Date.now()}`, name: newGroupName.trim(), color: "#555555" });
+    if (!workspaceId) {
+      setActionError("workspace 未就绪，暂时无法新建分组。");
+      return;
+    }
+    setActionError(null);
+    await createAccountGroup({
+      workspace_id: workspaceId,
+      name: newGroupName.trim(),
+      color: "#555555",
+    });
     setNewGroupName("");
     setAddingGroup(false);
+    await loadAccounts();
+  };
+
+  const handleMoveSelectedToFirstGroup = async () => {
+    const groupId = groups[0]?.id;
+    if (!groupId) return;
+    setActionError(null);
+    await assignAccountsToGroup({ account_ids: Array.from(selected), group_id: groupId });
+    setSelected(new Set());
+    await loadAccounts();
+  };
+
+  const handleRandomizePersonas = async () => {
+    const ids = Array.from(selected);
+    setSelected(new Set());
+    setActionError(null);
+    const results = await Promise.allSettled(ids.map((id) => updatePersona(id, {
+      workspace_id: workspaceId ?? "",
+      gender: "male",
+      nationality: "中国",
+      age: 28,
+      interests: ["AI", "Crypto", "Tech"],
+      personality_traits: ["直接", "幽默", "分析型"],
+      writing_style: "短句，观点鲜明",
+      bio: "",
+      distillation_sample_tweets: "",
+      source: "manual",
+      actor_type: "user",
+    })));
+    const failed = results.filter((result) => result.status === "rejected").length;
+    if (failed > 0) {
+      setActionError(`${failed} 个账号人格生成失败，请进入人格页单独处理。`);
+    }
+    await loadAccounts();
   };
 
   const groupCounts = useMemo(() => {
@@ -113,9 +260,9 @@ export default function AccountsPage() {
         <div className="pt-2">
           {addingGroup ? (
             <div className="px-2 space-y-2">
-              <Input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="分组名称" className="h-8 text-xs" onKeyDown={(e) => e.key === "Enter" && handleAddGroup()} />
+              <Input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="分组名称" className="h-8 text-xs" onKeyDown={(e) => e.key === "Enter" && void handleAddGroup()} />
               <div className="flex gap-1">
-                <Button size="sm" className="flex-1 h-7 text-xs" onClick={handleAddGroup}>确认</Button>
+                <Button size="sm" className="flex-1 h-7 text-xs" onClick={() => void handleAddGroup()}>确认</Button>
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAddingGroup(false)}>取消</Button>
               </div>
             </div>
@@ -145,19 +292,51 @@ export default function AccountsPage() {
           </div>
         </div>
 
+        {connected && !hideConnectionBanner ? (
+          <div className="mx-6 mt-4 rounded-xl border border-[#D5F5E7] bg-[#F4FCF8] px-4 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 text-[#00BA7C]" />
+                <div>
+                  <p className="text-sm font-medium text-[#111111]">X 账号已绑定完成</p>
+                  <p className="mt-1 text-xs text-[#666666]">
+                    {connectedAccount
+                      ? `已成功绑定 ${connectedAccount.displayName}（${connectedAccount.handle}），并完成 credential 校验与资料同步。`
+                      : "已成功完成 credential 绑定、校验与资料同步。"}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setHideConnectionBanner(true);
+                  router.replace("/accounts");
+                }}
+                className="text-[#999999] hover:text-[#333333]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="mx-6 mt-4 rounded-xl border border-[#F5D3D0] bg-[#FFF5F4] px-4 py-3 text-sm text-[#D93025]">
+            {actionError}
+          </div>
+        ) : null}
+
         {/* Bulk Action Bar */}
         {selected.size > 0 && (
           <div className="px-6 py-2.5 bg-black/5 border-b border-[#E8E8E8] flex items-center gap-3">
             <span className="text-[#111111] text-sm font-medium">已选中 {selected.size} 个账号</span>
             <div className="flex gap-2 ml-2">
               <Button size="sm" variant="outline" className="h-7 text-xs border-[#E0E0E0] text-[#111111] hover:bg-black/4" onClick={() => setShowTemplate(true)}>套用人格模板</Button>
-              <Button size="sm" variant="outline" className="h-7 text-xs border-[#E0E0E0] text-[#111111] hover:bg-black/4" onClick={() => { randomizePersonas(Array.from(selected)); setSelected(new Set()); }}>随机生成人格</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs border-[#E0E0E0] text-[#111111] hover:bg-black/4" onClick={() => void handleRandomizePersonas()}>随机生成人格</Button>
               <Button size="sm" variant="outline" className="h-7 text-xs border-[#E0E0E0] text-[#999999]" onClick={() => {
-                const groupId = groups[0]?.id;
-                if (groupId) moveAccountsToGroup(Array.from(selected), groupId);
-                setSelected(new Set());
+                void handleMoveSelectedToFirstGroup();
               }}>移入分组</Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400 hover:bg-red-900/20" onClick={handleDelete}>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400 hover:bg-red-900/20" onClick={() => void handleDelete()}>
                 <Trash2 className="w-3.5 h-3.5 mr-1" />删除
               </Button>
             </div>
@@ -193,7 +372,7 @@ export default function AccountsPage() {
                     </td>
                     <td className="py-3 pr-4">
                       <div className="flex items-center gap-3">
-                        <img src={`https://unavatar.io/twitter/${account.avatarSeed}`} alt={account.displayName} className="w-8 h-8 rounded-full bg-[#E8E8E8] flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${account.avatarSeed}`; }} />
+                        <img src={account.avatarUrl || `https://unavatar.io/twitter/${account.avatarSeed}`} alt={account.displayName} className="w-8 h-8 rounded-full bg-[#E8E8E8] flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${account.avatarSeed}`; }} />
                         <div>
                           <p className="text-[#111111] font-medium text-sm">{account.displayName}</p>
                           <p className="text-[#999999] text-xs">{account.handle}</p>
@@ -233,7 +412,14 @@ export default function AccountsPage() {
             </tbody>
           </table>
 
-          {filtered.length === 0 && (
+          {loading && (
+            <div className="text-center py-20 text-[#999999]">
+              <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="text-sm">正在加载真实账号...</p>
+            </div>
+          )}
+
+          {!loading && filtered.length === 0 && (
             <div className="text-center py-20 text-[#999999]">
               <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
               <p className="text-sm">{search ? "没有匹配的账号" : "还没有账号"}</p>
@@ -247,8 +433,8 @@ export default function AccountsPage() {
         </div>
       </div>
 
-      <AddAccountModal open={showAdd} onClose={() => setShowAdd(false)} />
-      <CsvImportModal open={showCsv} onClose={() => setShowCsv(false)} />
+      <AddAccountModal open={showAdd} onClose={() => { setShowAdd(false); void loadAccounts(); }} />
+      <CsvImportModal open={showCsv} onClose={() => { setShowCsv(false); void loadAccounts(); }} />
       {showTemplate && (
         <PersonaTemplateModal
           accountIds={Array.from(selected)}
@@ -256,5 +442,13 @@ export default function AccountsPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function AccountsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-[#999999]">正在加载账号管理...</div>}>
+      <AccountsPageContent />
+    </Suspense>
   );
 }

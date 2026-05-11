@@ -81,3 +81,96 @@ test("ProviderBackedModelGateway does not hide non-fallback content brief errors
     },
   }, { agent_version: "v1" }), /invalid brief-builder input/);
 });
+
+test("ProviderBackedModelGateway shortens over-limit drafts to fit the X post cap", async () => {
+  const gateway = new ProviderBackedModelGateway(new StubProvider(async () => ({
+    provider: "stub",
+    model_name: "stub-model",
+    raw_text: JSON.stringify({
+      topic: "Macro",
+      content: "A".repeat(300),
+      rationale: "Original model rationale",
+    }),
+  })));
+
+  const result = await gateway.generateDraft({
+    account_id: "account-1",
+    generation_mode: "source_backed",
+    topic: "Macro",
+    recent_documents: [],
+    evidence_documents: [
+      {
+        source_document_id: "doc-1",
+        title: "Macro setup",
+        summary: "Macro setup summary",
+        canonical_url: "https://example.com/doc-1",
+      },
+    ],
+    content_brief: {
+      brief_id: "brief-1",
+      generation_mode: "from_source_scope",
+      topic: "Macro",
+      angle: "Focus on implications",
+      audience: "Traders",
+      outline: "Hook: ...",
+    },
+    persona: {
+      writing_style: "direct",
+      bio: "macro trader",
+      interests: ["macro"],
+      personality_traits: ["blunt"],
+      distillation_sample_tweets: "sample line one",
+    },
+  }, { agent_version: "v1" });
+
+  assert.equal(result.content.length, 280);
+  assert.equal(result.content.endsWith("..."), true);
+  assert.match(result.rationale, /shortened to fit the X post limit/);
+});
+
+test("ProviderBackedModelGateway rejects formulaic AI-sounding drafts", async () => {
+  const gateway = new ProviderBackedModelGateway(new StubProvider(async () => ({
+    provider: "stub",
+    model_name: "stub-model",
+    raw_text: JSON.stringify({
+      topic: "Macro",
+      content: "Markets panic. While Bitcoin debates, TRON builds unstoppable infrastructure. Real utility wins. Keep building.",
+      rationale: "Original model rationale",
+    }),
+  })));
+
+  await assert.rejects(() => gateway.generateDraft({
+    account_id: "account-1",
+    generation_mode: "source_backed",
+    topic: "Macro",
+    recent_documents: [],
+    evidence_documents: [
+      {
+        source_document_id: "doc-1",
+        title: "Macro setup",
+        summary: "Macro setup summary",
+        canonical_url: "https://example.com/doc-1",
+      },
+    ],
+    content_brief: {
+      brief_id: "brief-1",
+      generation_mode: "from_source_scope",
+      topic: "Macro",
+      angle: "Focus on implications",
+      audience: "Traders",
+      outline: "Hook: ...",
+    },
+    persona: {
+      writing_style: "direct",
+      bio: "macro trader",
+      interests: ["macro"],
+      personality_traits: ["blunt"],
+      distillation_sample_tweets: "sample line one",
+    },
+  }, { agent_version: "v1" }), (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.code, "MODEL_INVALID_OUTPUT");
+    assert.match(error.message, /voice quality guard/);
+    return true;
+  });
+});

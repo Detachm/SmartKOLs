@@ -57,7 +57,7 @@ export function markReplyProposalSent(
   proposal: ReplyProposal,
   input: { connector_request_id: string; external_reply_id: string; sent_at: string },
 ): ReplyProposal {
-  if (proposal.status !== "approved") {
+  if (proposal.status !== "approved" && proposal.status !== "pending_review") {
     throw new AppError("INVALID_STATE", `reply proposal cannot transition from ${proposal.status} to sent`, {
       details: { proposal_id: proposal.id, from: proposal.status, to: "sent" },
     });
@@ -68,6 +68,7 @@ export function markReplyProposalSent(
     status: requireOneOf("sent", "status", ["pending_review", "approved", "rejected", "sent"] as const),
     connector_request_id: requireNonEmptyString(input.connector_request_id, "connector_request_id"),
     external_reply_id: requireNonEmptyString(input.external_reply_id, "external_reply_id"),
+    reviewed_at: proposal.reviewed_at ?? requireNonEmptyString(input.sent_at, "sent_at"),
     sent_at: requireNonEmptyString(input.sent_at, "sent_at"),
   };
 }

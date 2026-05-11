@@ -47,6 +47,14 @@ interface DraftListRow {
   schedule_scheduled_for?: string | null;
   schedule_status?: "scheduled" | "queued" | "published" | "failed" | "cancelled" | null;
   schedule_created_at?: string | null;
+  latest_publish_job_id?: string | null;
+  latest_publish_job_status?: "queued" | "running" | "succeeded" | "failed" | null;
+  latest_publish_job_idempotency_key?: string | null;
+  latest_publish_job_error_code?: string | null;
+  latest_publish_job_error_message?: string | null;
+  latest_publish_job_run_after?: string | null;
+  latest_publish_job_started_at?: string | null;
+  latest_publish_job_finished_at?: string | null;
 }
 
 export class SqliteDraftListReadModel implements ListDraftsReadModel {
@@ -123,6 +131,14 @@ export class SqliteDraftListReadModel implements ListDraftsReadModel {
         ps.scheduled_for AS schedule_scheduled_for,
         ps.status AS schedule_status,
         ps.created_at AS schedule_created_at
+        ,pj.id AS latest_publish_job_id
+        ,pj.status AS latest_publish_job_status
+        ,pj.idempotency_key AS latest_publish_job_idempotency_key
+        ,pj.error_code AS latest_publish_job_error_code
+        ,pj.error_message AS latest_publish_job_error_message
+        ,pj.run_after AS latest_publish_job_run_after
+        ,pj.started_at AS latest_publish_job_started_at
+        ,pj.finished_at AS latest_publish_job_finished_at
       FROM drafts d
       INNER JOIN accounts a ON a.id = d.account_id
       INNER JOIN workspaces w ON w.id = d.workspace_id
@@ -139,6 +155,13 @@ export class SqliteDraftListReadModel implements ListDraftsReadModel {
         FROM publish_schedules inner_ps
         WHERE inner_ps.draft_id = d.id
         ORDER BY inner_ps.created_at DESC, inner_ps.id DESC
+        LIMIT 1
+      )
+      LEFT JOIN publish_jobs pj ON pj.id = (
+        SELECT inner_pj.id
+        FROM publish_jobs inner_pj
+        WHERE inner_pj.schedule_id = ps.id
+        ORDER BY inner_pj.run_after DESC, inner_pj.id DESC
         LIMIT 1
       )
       ${whereSql}
@@ -185,6 +208,7 @@ function mapDraftListRow(row: DraftListRow): DraftListItem {
     current_version: mapCurrentVersion(row),
     latest_review: mapLatestReview(row),
     schedule: mapSchedule(row),
+    latest_publish_job: mapLatestPublishJob(row),
   };
 }
 
@@ -234,5 +258,23 @@ function mapSchedule(row: DraftListRow): PublishScheduleResponse | undefined {
     scheduled_for: row.schedule_scheduled_for,
     status: row.schedule_status,
     created_at: row.schedule_created_at,
+  };
+}
+
+function mapLatestPublishJob(row: DraftListRow) {
+  if (!row.latest_publish_job_id || !row.latest_publish_job_status || !row.latest_publish_job_idempotency_key || !row.latest_publish_job_run_after) {
+    return undefined;
+  }
+
+  return {
+    id: row.latest_publish_job_id,
+    schedule_id: row.schedule_id ?? "",
+    status: row.latest_publish_job_status,
+    idempotency_key: row.latest_publish_job_idempotency_key,
+    error_code: row.latest_publish_job_error_code ?? undefined,
+    error_message: row.latest_publish_job_error_message ?? undefined,
+    run_after: row.latest_publish_job_run_after,
+    started_at: row.latest_publish_job_started_at ?? undefined,
+    finished_at: row.latest_publish_job_finished_at ?? undefined,
   };
 }

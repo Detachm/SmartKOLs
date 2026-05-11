@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { MockStoreProvider } from "@/lib/mock-store";
 import Sidebar from "@/components/layout/Sidebar";
 
 export const metadata: Metadata = {
@@ -16,12 +15,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased bg-[#F7F7F7] text-[#111111]">
-        <MockStoreProvider>
-          <Sidebar />
-          <main className="ml-56 min-h-screen">
-            {children}
-          </main>
-        </MockStoreProvider>
+        <Sidebar />
+        <main className="ml-56 min-h-screen">
+          {children}
+        </main>
       </body>
     </html>
   );
