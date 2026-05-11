@@ -1,0 +1,81 @@
+services:
+  frontend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    command: >
+      bash -lc "npm run build && npx next start -H 0.0.0.0 -p 3000"
+    depends_on:
+      - backend-http
+
+  backend-http:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      BACKEND_PORT: 3100
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_DB_PATH: /app/data/runtime/live-smartkols.sqlite
+      BACKEND_ARTIFACTS_DIR: /app/data/artifacts
+    command:
+      - npm
+      - run
+      - backend:dev
+    volumes:
+      - smartkols_runtime:/app/data/runtime
+      - smartkols_artifacts:/app/data/artifacts
+
+  backend-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      BACKEND_PORT: 3100
+      BACKEND_DB_PATH: /app/data/runtime/live-smartkols.sqlite
+      BACKEND_ARTIFACTS_DIR: /app/data/artifacts
+      WORKER_NAME: all
+    command:
+      - npm
+      - run
+      - backend:worker
+    depends_on:
+      - backend-http
+    volumes:
+      - smartkols_runtime:/app/data/runtime
+      - smartkols_artifacts:/app/data/artifacts
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend-http
+
+volumes:
+  smartkols_runtime:
+  smartkols_artifacts:
+  caddy_data:
+  caddy_config:

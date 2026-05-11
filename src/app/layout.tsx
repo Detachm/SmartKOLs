@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { MockStoreProvider } from "@/lib/mock-store";
-import { TourProvider } from "@/components/tour/TourProvider";
-import TourOverlay from "@/components/tour/TourOverlay";
 import Sidebar from "@/components/layout/Sidebar";
 
 export const metadata: Metadata = {
@@ -18,15 +15,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased bg-[#F7F7F7] text-[#111111]">
-        <MockStoreProvider>
-          <TourProvider>
-            <Sidebar />
-            <main className="md:ml-56 min-h-screen pt-14 md:pt-0">
-              {children}
-            </main>
-            <TourOverlay />
-          </TourProvider>
-        </MockStoreProvider>
+        <Sidebar />
+        <main className="ml-56 min-h-screen">
+          {children}
+        </main>
       </body>
     </html>
   );

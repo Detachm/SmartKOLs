@@ -1,0 +1,15 @@
+.git
+.gitignore
+.next
+node_modules
+backend/runtime
+data/*.db
+data/runtime/*
+!.env*.example
+!.gitkeep
+.vercel
+.codex
+.claude
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

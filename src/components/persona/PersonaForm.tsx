@@ -1,29 +1,52 @@
 "use client";
 
-import { useState } from "react";
-import { Persona, useMockStore } from "@/lib/mock-store";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import TraitTagInput from "./TraitTagInput";
 
+export interface PersonaFormValue {
+  gender: string;
+  nationality: string;
+  age: number;
+  interests: string[];
+  personalityTraits: string[];
+  writingStyle: string;
+  bio: string;
+  distillationSampleTweets: string;
+}
+
 interface Props {
   accountId: string;
-  persona: Persona;
-  onSaved: () => void;
+  persona: PersonaFormValue;
+  onSaved: (persona: PersonaFormValue) => void | Promise<void>;
 }
 
 export default function PersonaForm({ accountId, persona, onSaved }: Props) {
-  const { updatePersona } = useMockStore();
-  const [form, setForm] = useState<Persona>({ ...persona });
+  const [form, setForm] = useState<PersonaFormValue>({ ...persona });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const set = (key: keyof Persona, value: string | number | string[]) => {
+  useEffect(() => {
+    setForm({ ...persona });
+    setError(null);
+  }, [persona]);
+
+  const set = (key: keyof PersonaFormValue, value: string | number | string[]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
-    updatePersona(accountId, form);
-    onSaved();
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSaved(form);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "人格保存失败");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -32,9 +55,10 @@ export default function PersonaForm({ accountId, persona, onSaved }: Props) {
       <div>
         <label className="text-sm text-[#999999] mb-2 block">性别</label>
         <div className="flex gap-3">
-          {[["male","男"], ["female","女"], ["non-binary","非二元"]].map(([val, label]) => (
+          {[["male", "男"], ["female", "女"], ["non-binary", "非二元"], ["unknown", "未知"]].map(([val, label]) => (
             <button
               key={val}
+              type="button"
               onClick={() => set("gender", val)}
               className={`px-4 py-2 rounded-lg text-sm transition-colors ${
                 form.gender === val
@@ -110,7 +134,23 @@ export default function PersonaForm({ accountId, persona, onSaved }: Props) {
         />
       </div>
 
-      <Button onClick={handleSave} className="w-full">保存人格配置</Button>
+      <div>
+        <label className="text-sm text-[#999999] mb-1.5 block">蒸馏样本</label>
+        <Textarea
+          value={form.distillationSampleTweets}
+          onChange={(e) => set("distillationSampleTweets", e.target.value)}
+          placeholder="蒸馏使用的代表性推文样本"
+          rows={5}
+        />
+      </div>
+
+      {error ? (
+        <p className="text-sm text-[#D93025]">{error}</p>
+      ) : null}
+
+      <Button onClick={handleSave} className="w-full" disabled={saving || !accountId}>
+        {saving ? "正在保存..." : "保存人格配置"}
+      </Button>
     </div>
   );
 }

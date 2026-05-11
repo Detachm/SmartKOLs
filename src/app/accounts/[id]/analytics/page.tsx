@@ -1,94 +1,101 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { useMockStore } from "@/lib/mock-store";
-import { useMemo } from "react";
-import { TrendingUp, Heart, Repeat2, MessageCircle, BarChart3 } from "lucide-react";
-
-function hashString(s: string): number {
-  return s.split("").reduce((acc, c, i) => acc + c.charCodeAt(0) * (i + 1), 0);
-}
-
-function seededRandom(seed: number) {
-  return () => {
-    seed = (seed * 9301 + 49297) % 233280;
-    return seed / 233280;
-  };
-}
+import { TrendingUp, Shield, ShieldAlert, BarChart3, FileText, Send, Database, AlertTriangle } from "lucide-react";
+import { getAccountAnalytics, type AccountAnalyticsResponse } from "@/lib/live-api";
 
 function formatNumber(n: number) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return String(n);
 }
+
+function formatTime(iso: string) {
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+const WEEKDAY_LABEL: Record<AccountAnalyticsResponse["publish_heatmap"][number]["weekday_code"], string> = {
+  mon: "周一",
+  tue: "周二",
+  wed: "周三",
+  thu: "周四",
+  fri: "周五",
+  sat: "周六",
+  sun: "周日",
+};
 
 export default function AnalyticsPage() {
   const params = useParams();
   const id = params.id as string;
-  const { accounts } = useMockStore();
-  const account = accounts.find((a) => a.id === id);
+  const [data, setData] = useState<AccountAnalyticsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const data = useMemo(() => {
-    const seed = hashString(id);
-    const rand = seededRandom(seed);
+  useEffect(() => {
+    let cancelled = false;
 
-    // Follower growth - 30 days
-    const baseFollowers = account?.followersCount || 100000;
-    const growth = Array.from({ length: 30 }, (_, i) => {
-      const dailyChange = Math.floor((rand() - 0.3) * 500);
-      return { day: i + 1, value: baseFollowers - (29 - i) * 200 + dailyChange };
-    });
+    async function load() {
+      setLoading(true);
+      try {
+        const result = await getAccountAnalytics(id, 30);
+        if (!cancelled) {
+          setData(result);
+          setError(null);
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : "加载账号分析失败");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
 
-    // Engagement totals (last 30 days)
-    const totalLikes = Math.floor(baseFollowers * (0.02 + rand() * 0.05));
-    const totalRetweets = Math.floor(totalLikes * (0.15 + rand() * 0.1));
-    const totalComments = Math.floor(totalLikes * (0.08 + rand() * 0.05));
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
-    // Heatmap 7x24
-    const heatmap = Array.from({ length: 7 }, (_, day) =>
-      Array.from({ length: 24 }, (_, hour) => {
-        const isWorkingHour = hour >= 8 && hour <= 22;
-        const isWeekday = day >= 1 && day <= 5;
-        const base = isWorkingHour && isWeekday ? 0.5 : 0.15;
-        return Math.floor((base + rand() * 0.5) * 100);
-      })
-    );
+  const chart = useMemo(() => {
+    if (!data || data.daily_activity.length === 0) return null;
+    const points = data.daily_activity;
+    const chartWidth = 720;
+    const chartHeight = 220;
+    const maxValue = Math.max(1, ...points.map((point) => point.drafts_created + point.posts_published + point.source_documents));
+    const polyline = points.map((point, index) => {
+      const total = point.drafts_created + point.posts_published + point.source_documents;
+      const x = (index / Math.max(1, points.length - 1)) * chartWidth;
+      const y = chartHeight - (total / maxValue) * (chartHeight - 24) - 12;
+      return `${x},${y}`;
+    }).join(" ");
 
-    // Top 5 tweets
-    const topTweets = Array.from({ length: 5 }, (_, i) => ({
-      content: [
-        "比特币 ETF 资金流入创新高，市场情绪逆转中。",
-        "AI 模型的 benchmark 不等于真实体验 —— 这是一个被低估的事实。",
-        "链上数据：鲸鱼地址持仓中位数正在上升。",
-        "开源不是理想主义，是最实用的商业策略。",
-        "写代码 10 年最大的感悟：简单就是最高级的复杂。",
-      ][i],
-      likes: Math.floor(1000 + rand() * 5000),
-      retweets: Math.floor(100 + rand() * 800),
-      comments: Math.floor(50 + rand() * 400),
-      time: `${Math.floor(rand() * 30) + 1} 天前`,
+    return { points, chartWidth, chartHeight, maxValue, polyline };
+  }, [data]);
+
+  const heatmapRows = useMemo(() => {
+    if (!data) return [];
+    return (["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const).map((weekday) => ({
+      weekday,
+      hours: Array.from({ length: 24 }, (_, hour) => data.publish_heatmap.find((point) => point.weekday_code === weekday && point.hour === hour)?.published_posts ?? 0),
     }));
+  }, [data]);
 
-    return { growth, totalLikes, totalRetweets, totalComments, heatmap, topTweets };
-  }, [id, account]);
+  if (loading) {
+    return <div className="text-sm text-[#999999]">正在加载真实数据...</div>;
+  }
 
-  if (!account) return <div>Account not found</div>;
+  if (error || !data) {
+    return <div className="rounded-xl border border-[#F1D0D0] bg-red-50 px-4 py-3 text-sm text-[#B04A4A]">{error || "加载失败"}</div>;
+  }
 
-  // Growth chart rendering (SVG)
-  const maxGrowth = Math.max(...data.growth.map((g) => g.value));
-  const minGrowth = Math.min(...data.growth.map((g) => g.value));
-  const growthRange = maxGrowth - minGrowth || 1;
-  const chartWidth = 700;
-  const chartHeight = 200;
-  const pts = data.growth.map((g, i) => {
-    const x = (i / (data.growth.length - 1)) * chartWidth;
-    const y = chartHeight - ((g.value - minGrowth) / growthRange) * (chartHeight - 20) - 10;
-    return `${x},${y}`;
-  }).join(" ");
-  const growthDelta = data.growth[data.growth.length - 1].value - data.growth[0].value;
-  const growthPct = ((growthDelta / data.growth[0].value) * 100).toFixed(1);
-
-  const maxHeat = Math.max(...data.heatmap.flat());
+  const maxHeat = Math.max(1, ...heatmapRows.flatMap((row) => row.hours));
+  const riskLevel = data.summary.current_risk_level;
+  const HealthIcon = riskLevel === "high" ? ShieldAlert : Shield;
 
   return (
     <div className="space-y-8">
@@ -97,95 +104,108 @@ export default function AnalyticsPage() {
           <BarChart3 className="w-5 h-5" />
           数据分析
         </h2>
-        <p className="text-[#999999] text-sm">近 30 天的账号数据表现与趋势</p>
+        <p className="text-[#999999] text-sm">基于真实 drafts / publish / source / connector 数据的 30 天分析。</p>
       </div>
 
-      {/* Engagement Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-6 gap-4">
         <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[#999999] text-xs">粉丝增长</span>
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">草稿数</span>
+            <FileText className="w-4 h-4 text-[#999999]" />
+          </div>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{formatNumber(data.summary.drafts_created)}</p>
+        </div>
+        <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">批准率</span>
             <TrendingUp className="w-4 h-4 text-[#00BA7C]" />
           </div>
-          <p className="text-[#111111] text-2xl font-bold">+{formatNumber(Math.abs(growthDelta))}</p>
-          <p className="text-xs text-[#00BA7C] mt-1">+{growthPct}% 近 30 天</p>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{data.summary.approval_rate !== undefined ? `${Math.round(data.summary.approval_rate * 100)}%` : "-"}</p>
         </div>
         <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[#999999] text-xs">总点赞</span>
-            <Heart className="w-4 h-4 text-red-400" />
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">已发布</span>
+            <Send className="w-4 h-4 text-sky-400" />
           </div>
-          <p className="text-[#111111] text-2xl font-bold">{formatNumber(data.totalLikes)}</p>
-          <p className="text-xs text-[#999999] mt-1">近 30 天</p>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{formatNumber(data.summary.posts_published)}</p>
         </div>
         <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[#999999] text-xs">总转发</span>
-            <Repeat2 className="w-4 h-4 text-[#00BA7C]" />
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">Source 文档</span>
+            <Database className="w-4 h-4 text-purple-500" />
           </div>
-          <p className="text-[#111111] text-2xl font-bold">{formatNumber(data.totalRetweets)}</p>
-          <p className="text-xs text-[#999999] mt-1">近 30 天</p>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{formatNumber(data.summary.source_documents)}</p>
         </div>
         <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[#999999] text-xs">总评论</span>
-            <MessageCircle className="w-4 h-4 text-sky-400" />
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">连接器失败</span>
+            <AlertTriangle className="w-4 h-4 text-red-400" />
           </div>
-          <p className="text-[#111111] text-2xl font-bold">{formatNumber(data.totalComments)}</p>
-          <p className="text-xs text-[#999999] mt-1">近 30 天</p>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{formatNumber(data.summary.connector_failures)}</p>
+        </div>
+        <div className="bg-white border border-[#E8E8E8] rounded-xl p-5">
+          <div className="flex items-center justify-between">
+            <span className="text-[#999999] text-xs">当前健康分</span>
+            <HealthIcon className="w-4 h-4 text-orange-500" />
+          </div>
+          <p className="text-[#111111] text-2xl font-bold mt-2">{data.summary.current_health_score ?? "-"}</p>
         </div>
       </div>
 
-      {/* Growth Chart */}
       <div className="bg-white border border-[#E8E8E8] rounded-xl p-6">
-        <h3 className="text-[#111111] font-semibold text-sm mb-4">粉丝增长趋势（近 30 天）</h3>
-        <svg viewBox={`0 0 ${chartWidth} ${chartHeight + 20}`} className="w-full h-auto">
-          <defs>
-            <linearGradient id="growthGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#00BA7C" stopOpacity="0.3" />
-              <stop offset="100%" stopColor="#00BA7C" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          <polygon
-            fill="url(#growthGradient)"
-            points={`0,${chartHeight} ${pts} ${chartWidth},${chartHeight}`}
-          />
-          <polyline
-            fill="none"
-            stroke="#00BA7C"
-            strokeWidth="2"
-            points={pts}
-          />
-        </svg>
+        <h3 className="text-[#111111] font-semibold text-sm mb-4">每日活动趋势</h3>
+        {!chart ? (
+          <div className="text-sm text-[#999999] py-6">这个时间窗口内还没有可视化数据。</div>
+        ) : (
+          <>
+            <svg viewBox={`0 0 ${chart.chartWidth} ${chart.chartHeight + 20}`} className="w-full h-auto">
+              <defs>
+                <linearGradient id="activityGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#111111" stopOpacity="0.25" />
+                  <stop offset="100%" stopColor="#111111" stopOpacity="0" />
+                </linearGradient>
+              </defs>
+              <polygon fill="url(#activityGradient)" points={`0,${chart.chartHeight} ${chart.polyline} ${chart.chartWidth},${chart.chartHeight}`} />
+              <polyline fill="none" stroke="#111111" strokeWidth="2" points={chart.polyline} />
+            </svg>
+            <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
+              {chart.points.slice(-3).map((point) => (
+                <div key={point.date} className="rounded-lg bg-[#F7F7F7] px-3 py-3">
+                  <p className="text-[#999999]">{point.date}</p>
+                  <p className="text-[#111111] font-medium mt-1">
+                    草稿 {point.drafts_created} / 发布 {point.posts_published} / 文档 {point.source_documents}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Heatmap */}
-      <div className="bg-white border border-[#E8E8E8] rounded-xl p-4 md:p-6">
-        <h3 className="text-[#111111] font-semibold text-sm mb-4">最佳发帖时间热力图</h3>
-        <div className="overflow-x-auto -mx-4 md:mx-0 px-4 md:px-0">
+      <div className="bg-white border border-[#E8E8E8] rounded-xl p-6">
+        <h3 className="text-[#111111] font-semibold text-sm mb-4">发帖热力图</h3>
+        <div className="overflow-x-auto">
           <table className="text-xs">
             <thead>
               <tr>
-                <th className="w-10"></th>
-                {Array.from({ length: 24 }, (_, h) => (
-                  <th key={h} className="text-center text-[#999999] font-normal w-6 text-[10px]">{h}</th>
+                <th className="w-14" />
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <th key={hour} className="text-center text-[#999999] font-normal w-6 text-[10px]">{hour}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {["一", "二", "三", "四", "五", "六", "日"].map((day, dayIdx) => (
-                <tr key={dayIdx}>
-                  <td className="text-[#999999] text-xs pr-2">周{day}</td>
-                  {data.heatmap[(dayIdx + 1) % 7].map((val, hourIdx) => {
-                    const intensity = val / maxHeat;
+              {heatmapRows.map((row) => (
+                <tr key={row.weekday}>
+                  <td className="text-[#999999] text-xs pr-2">{WEEKDAY_LABEL[row.weekday]}</td>
+                  {row.hours.map((value, hour) => {
+                    const intensity = value / maxHeat;
                     return (
-                      <td key={hourIdx} className="p-0.5">
+                      <td key={hour} className="p-0.5">
                         <div
                           className="w-5 h-5 rounded"
-                          style={{
-                            backgroundColor: `rgba(17, 17, 17, ${intensity * 0.8 + 0.05})`,
-                          }}
-                          title={`${val}% 互动率`}
+                          style={{ backgroundColor: `rgba(17, 17, 17, ${intensity * 0.85 + 0.05})` }}
+                          title={`${WEEKDAY_LABEL[row.weekday]} ${hour}:00 · ${value} 条`}
                         />
                       </td>
                     );
@@ -197,24 +217,46 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* Top 5 Tweets */}
-      <div className="bg-white border border-[#E8E8E8] rounded-xl p-6">
-        <h3 className="text-[#111111] font-semibold text-sm mb-4">高互动推文 Top 5</h3>
-        <div className="space-y-3">
-          {data.topTweets.map((tw, i) => (
-            <div key={i} className="flex items-start gap-3 py-3 border-b border-[#E8E8E8] last:border-b-0">
-              <div className="text-2xl font-bold text-[#E0E0E0] w-8">#{i + 1}</div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[#111111] text-sm mb-2">{tw.content}</p>
-                <div className="flex gap-4 text-xs text-[#999999]">
-                  <span className="flex items-center gap-1"><Heart className="w-3 h-3" /> {formatNumber(tw.likes)}</span>
-                  <span className="flex items-center gap-1"><Repeat2 className="w-3 h-3" /> {formatNumber(tw.retweets)}</span>
-                  <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" /> {formatNumber(tw.comments)}</span>
-                  <span className="ml-auto">{tw.time}</span>
-                </div>
-              </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white border border-[#E8E8E8] rounded-xl p-6">
+          <h3 className="text-[#111111] font-semibold text-sm mb-4">最近已发布内容</h3>
+          {data.recent_published_posts.length === 0 ? (
+            <div className="text-sm text-[#999999] py-6">近 30 天还没有已发布内容。</div>
+          ) : (
+            <div className="space-y-3">
+              {data.recent_published_posts.map((post) => (
+                <a
+                  key={post.id}
+                  href={post.external_post_url || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block rounded-xl border border-[#E8E8E8] p-4 hover:border-[#D5D5D5]"
+                >
+                  <p className="text-sm text-[#111111] whitespace-pre-line">{post.content}</p>
+                  <p className="text-xs text-[#999999] mt-2">{formatTime(post.published_at)}</p>
+                </a>
+              ))}
             </div>
-          ))}
+          )}
+        </div>
+
+        <div className="bg-white border border-[#E8E8E8] rounded-xl p-6">
+          <h3 className="text-[#111111] font-semibold text-sm mb-4">最近连接器失败</h3>
+          {data.recent_connector_failures.length === 0 ? (
+            <div className="text-sm text-[#999999] py-6">近 30 天没有 connector failure。</div>
+          ) : (
+            <div className="space-y-3">
+              {data.recent_connector_failures.map((failure) => (
+                <div key={failure.id} className="rounded-xl border border-[#F1D0D0] bg-red-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-[#111111]">{failure.endpoint_code}</p>
+                    <span className="text-[11px] text-[#999999]">{formatTime(failure.started_at)}</span>
+                  </div>
+                  <p className="text-xs text-[#B04A4A] mt-2">{failure.error_message || failure.error_code || "unknown error"}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

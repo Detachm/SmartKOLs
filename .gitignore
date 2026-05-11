@@ -26,7 +26,10 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
-.env*.local
+.env
+.env.*
+!.env*.example
+!.env.example
 
 # vercel
 .vercel
@@ -37,5 +40,12 @@ next-env.d.ts
 
 # local dev artifacts
 .claude/
+.codex
 Test/
 color-preview.html
+
+# runtime data
+backend/runtime/
+data/*.db
+data/runtime/*
+!data/runtime/.gitkeep
